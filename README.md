@@ -2,7 +2,7 @@
 
 터미널에서 브라우저 방문 기록을 분석해 자주 찾는 사이트, 체류 시간, 시간대별 패턴 등을 보여주는 CLI 도구입니다.
 
-> **macOS 전용**입니다. Windows / Linux는 지원하지 않습니다.
+**macOS / Windows / Linux** 에서 동작합니다.
 
 ---
 
@@ -20,17 +20,20 @@
 
 ## 지원 브라우저
 
-| 브라우저 | 지원 |
-|---|---|
-| Arc | ✅ |
-| Chrome | ✅ |
-| Brave | ✅ |
-| Edge | ✅ |
-| Vivaldi | ✅ |
-| Opera | ✅ |
-| Safari | ⚠️ 전체 디스크 접근 권한 필요 |
+| 브라우저 | macOS | Windows | Linux |
+|---|---|---|---|
+| Chrome  | ✅ | ✅ | ✅ |
+| Firefox | ✅ | ✅ | ✅ |
+| Brave   | ✅ | ✅ | ✅ |
+| Edge    | ✅ | ✅ | ✅ |
+| Vivaldi | ✅ | ✅ | ✅ |
+| Opera   | ✅ | ✅ | ✅ |
+| Arc     | ✅ | ✅ | ❌ |
+| Safari  | ⚠️ | ❌ | ❌ |
 
 설치된 브라우저는 자동으로 감지됩니다.
+
+> Safari는 macOS 전용이며, 터미널에 **전체 디스크 접근** 권한이 필요합니다.
 
 ---
 
@@ -48,8 +51,13 @@ cd "웹탐색 cli"
 ### 2. 가상환경 생성 및 활성화
 
 ```bash
+# macOS / Linux
 python3 -m venv venv
 source venv/bin/activate
+
+# Windows
+python -m venv venv
+venv\Scripts\activate
 ```
 
 ### 3. 패키지 설치
@@ -58,9 +66,9 @@ source venv/bin/activate
 pip install -e .
 ```
 
-이후부터는 터미널 어디서든 `browser-history` 명령을 사용할 수 있습니다.
+이후부터는 어디서든 `browser-history` 명령을 사용할 수 있습니다.
 
-> 가상환경을 새 터미널 세션에서 다시 활성화하려면 `source venv/bin/activate`를 실행하세요.
+> 새 터미널 세션을 열면 `source venv/bin/activate` (Windows: `venv\Scripts\activate`)로 가상환경을 다시 활성화하세요.
 
 ---
 
@@ -82,7 +90,7 @@ browser-history <명령> [옵션]
 
 | 옵션 | 설명 | 기본값 |
 |---|---|---|
-| `--browser`, `-b` | 특정 브라우저만 분석 (`arc`, `chrome`, `brave` 등) | 전체 |
+| `--browser`, `-b` | 특정 브라우저만 분석 (`chrome`, `firefox`, `brave` 등) | 전체 |
 | `--days`, `-d` | 최근 N일만 분석 | 전체 기간 |
 | `--top`, `-t` | 표시할 사이트 수 | 20 |
 | `--sort`, `-s` | 정렬 기준 (`count` \| `duration`) | `count` |
@@ -96,8 +104,8 @@ browser-history <명령> [옵션]
 # 전체 기간 통계
 browser-history stats
 
-# Arc 브라우저, 최근 7일
-browser-history stats --browser arc --days 7
+# Chrome 브라우저, 최근 7일
+browser-history stats --browser chrome --days 7
 
 # 체류 시간 기준 Top 30
 browser-history top --sort duration --limit 30
@@ -130,7 +138,7 @@ browser-history browsers
 
 ---
 
-## Safari 권한 설정
+## Safari 권한 설정 (macOS)
 
 Safari 데이터를 읽으려면 터미널에 전체 디스크 접근 권한이 필요합니다.
 
