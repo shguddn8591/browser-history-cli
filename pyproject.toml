@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "browser-history-cli"
+version = "1.0.0"
+description = "브라우저 방문 기록 분석 CLI"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+browser-history = "browser_history:main"
+
+[tool.setuptools]
+py-modules = ["browser_history"]

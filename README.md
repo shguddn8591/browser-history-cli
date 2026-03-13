@@ -2,6 +2,8 @@
 
 터미널에서 브라우저 방문 기록을 분석해 자주 찾는 사이트, 체류 시간, 시간대별 패턴 등을 보여주는 CLI 도구입니다.
 
+> **macOS 전용**입니다. Windows / Linux는 지원하지 않습니다.
+
 ---
 
 ## 목적
@@ -34,18 +36,38 @@
 
 ## 설치
 
-Python 3.9 이상과 `rich` 라이브러리가 필요합니다.
+**요구사항**: Python 3.9 이상
+
+### 1. 프로젝트 클론
 
 ```bash
-pip3 install rich
+git clone <repo-url>
+cd "웹탐색 cli"
 ```
+
+### 2. 가상환경 생성 및 활성화
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. 패키지 설치
+
+```bash
+pip install -e .
+```
+
+이후부터는 터미널 어디서든 `browser-history` 명령을 사용할 수 있습니다.
+
+> 가상환경을 새 터미널 세션에서 다시 활성화하려면 `source venv/bin/activate`를 실행하세요.
 
 ---
 
 ## 실행 방법
 
 ```bash
-python3 browser_history.py <명령> [옵션]
+browser-history <명령> [옵션]
 ```
 
 ### 명령 목록
@@ -54,13 +76,13 @@ python3 browser_history.py <명령> [옵션]
 |---|---|
 | `stats` | 통계 대시보드 (기본값) |
 | `top` | 자주 방문한 사이트 순위 |
-| `browsers` | 감지된 브라우저 목록 |
+| `browsers` | 감지된 브라우저 목록 확인 |
 
 ### 옵션
 
 | 옵션 | 설명 | 기본값 |
 |---|---|---|
-| `--browser`, `-b` | 특정 브라우저만 분석 (`arc`, `chrome`, `brave` ...) | 전체 |
+| `--browser`, `-b` | 특정 브라우저만 분석 (`arc`, `chrome`, `brave` 등) | 전체 |
 | `--days`, `-d` | 최근 N일만 분석 | 전체 기간 |
 | `--top`, `-t` | 표시할 사이트 수 | 20 |
 | `--sort`, `-s` | 정렬 기준 (`count` \| `duration`) | `count` |
@@ -72,19 +94,19 @@ python3 browser_history.py <명령> [옵션]
 
 ```bash
 # 전체 기간 통계
-python3 browser_history.py stats
+browser-history stats
 
 # Arc 브라우저, 최근 7일
-python3 browser_history.py stats --browser arc --days 7
+browser-history stats --browser arc --days 7
 
 # 체류 시간 기준 Top 30
-python3 browser_history.py top --sort duration --limit 30
+browser-history top --sort duration --limit 30
 
 # 최근 30일, 방문 횟수 기준 순위
-python3 browser_history.py top --days 30
+browser-history top --days 30
 
 # 감지된 브라우저 확인
-python3 browser_history.py browsers
+browser-history browsers
 ```
 
 ---
