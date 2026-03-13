@@ -1,406 +1,545 @@
 #!/usr/bin/env python3
 """
-브라우저 방문 기록 분석 CLI
-지원 브라우저: Arc, Chrome, Brave, Edge, Vivaldi, Opera, Firefox, Safari
-지원 OS: macOS, Windows, Linux
+Browser History Analyzer CLI
+Supports: Arc, Chrome, Brave, Edge, Vivaldi, Opera, Firefox, Safari
+Platforms: macOS, Windows, Linux
 """
 
 import argparse
-import sqlite3
-import shutil
-import tempfile
-import os
-import sys
+import contextlib
+import csv
 import glob
+import json
+import os
 import platform
-from datetime import datetime, timedelta
+import re
+import shutil
+import sqlite3
+import sys
+import tempfile
 from collections import defaultdict
+from datetime import datetime, timedelta
+from io import StringIO
 from urllib.parse import urlparse
 
 try:
     from rich.console import Console
-    from rich.table import Table
     from rich.panel import Panel
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.table import Table
     from rich.text import Text
     from rich import box
 except ImportError:
-    print("rich 라이브러리가 필요합니다: pip install rich")
+    print("rich is required: pip install rich")
     sys.exit(1)
 
 console = Console()
-
 SYSTEM = platform.system()  # 'Darwin' | 'Windows' | 'Linux'
 
-# 브라우저 내부 URL 접두사 (분석에서 제외)
+# ---------------------------------------------------------------------------
+# Internal URL prefixes — excluded from all analysis
+# ---------------------------------------------------------------------------
 INTERNAL_PREFIXES = (
     "chrome://", "arc://", "about:", "moz-extension://",
     "chrome-extension://", "edge://", "brave://", "vivaldi://",
-    "opera://", "file://",
+    "opera://", "file://", "data:", "javascript:",
 )
 
-# --------------------------------------------------------------------------- #
-# 시간 변환
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+# Epoch constants
+# ---------------------------------------------------------------------------
 CHROMIUM_EPOCH = datetime(1601, 1, 1)
 UNIX_EPOCH = datetime(1970, 1, 1)
 SAFARI_EPOCH = datetime(2001, 1, 1)
 
+# ---------------------------------------------------------------------------
+# Domain → Category mapping
+# Productivity tiers:  productive | neutral | leisure
+# ---------------------------------------------------------------------------
+CATEGORY_MAP: dict[str, str] = {
+    # --- AI Tools ---
+    "chat.openai.com": "ai", "chatgpt.com": "ai",
+    "claude.ai": "ai", "gemini.google.com": "ai",
+    "perplexity.ai": "ai", "copilot.microsoft.com": "ai",
+    "bard.google.com": "ai", "poe.com": "ai",
+    "huggingface.co": "ai", "replicate.com": "ai",
 
-def chromium_ts_to_dt(microseconds):
-    if not microseconds:
+    # --- Development ---
+    "github.com": "dev", "gitlab.com": "dev", "bitbucket.org": "dev",
+    "stackoverflow.com": "dev", "stackexchange.com": "dev",
+    "developer.mozilla.org": "dev", "docs.python.org": "dev",
+    "npmjs.com": "dev", "pypi.org": "dev", "crates.io": "dev",
+    "codepen.io": "dev", "jsfiddle.net": "dev", "replit.com": "dev",
+    "codesandbox.io": "dev", "vercel.com": "dev", "netlify.com": "dev",
+    "heroku.com": "dev", "railway.app": "dev", "render.com": "dev",
+    "digitalocean.com": "dev", "aws.amazon.com": "dev",
+    "cloud.google.com": "dev", "azure.microsoft.com": "dev",
+    "leetcode.com": "dev", "hackerrank.com": "dev",
+    "school.programmers.co.kr": "dev", "programmers.co.kr": "dev",
+    "inflearn.com": "education", "fastcampus.co.kr": "education",
+
+    # --- Work Tools ---
+    "notion.so": "work", "notions.so": "work",
+    "docs.google.com": "work", "sheets.google.com": "work",
+    "slides.google.com": "work", "drive.google.com": "work",
+    "office.com": "work", "teams.microsoft.com": "work",
+    "slack.com": "work", "discord.com": "work",
+    "trello.com": "work", "asana.com": "work",
+    "jira.atlassian.com": "work", "confluence.atlassian.com": "work",
+    "figma.com": "work", "miro.com": "work",
+    "airtable.com": "work", "monday.com": "work",
+    "zoom.us": "work", "meet.google.com": "work",
+    "mail.google.com": "work", "mail.naver.com": "work",
+    "outlook.live.com": "work",
+
+    # --- Social Media ---
+    "twitter.com": "social", "x.com": "social",
+    "instagram.com": "social", "facebook.com": "social",
+    "linkedin.com": "social", "reddit.com": "social",
+    "threads.net": "social", "threads.com": "social",
+    "tiktok.com": "social", "snapchat.com": "social",
+    "pinterest.com": "social", "tumblr.com": "social",
+    "mastodon.social": "social", "bsky.app": "social",
+
+    # --- Video / Entertainment ---
+    "youtube.com": "video", "youtu.be": "video",
+    "netflix.com": "entertainment", "disneyplus.com": "entertainment",
+    "twitch.tv": "entertainment", "vimeo.com": "video",
+    "wavve.com": "entertainment", "watcha.com": "entertainment",
+    "tving.com": "entertainment", "laftel.net": "entertainment",
+    "dailymotion.com": "video",
+
+    # --- Gaming ---
+    "store.steampowered.com": "gaming", "steamcommunity.com": "gaming",
+    "epicgames.com": "gaming", "gog.com": "gaming",
+    "nexon.com": "gaming", "maplestory.nexon.com": "gaming",
+    "blizzard.com": "gaming", "battle.net": "gaming",
+    "lol.op.gg": "gaming", "op.gg": "gaming",
+
+    # --- News ---
+    "naver.com": "news", "news.naver.com": "news",
+    "daum.net": "news", "news.daum.net": "news",
+    "hani.co.kr": "news", "chosun.com": "news",
+    "joongang.co.kr": "news", "donga.com": "news",
+    "yonhapnews.co.kr": "news",
+    "bbc.com": "news", "cnn.com": "news",
+    "nytimes.com": "news", "theguardian.com": "news",
+    "techcrunch.com": "news", "theverge.com": "news",
+    "wired.com": "news", "ycombinator.com": "news",
+    "news.ycombinator.com": "news",
+
+    # --- Shopping ---
+    "amazon.com": "shopping", "amazon.co.jp": "shopping",
+    "coupang.com": "shopping", "gmarket.co.kr": "shopping",
+    "11st.co.kr": "shopping", "auction.co.kr": "shopping",
+    "musinsa.com": "shopping", "29cm.co.kr": "shopping",
+    "oliveyoung.co.kr": "shopping", "kurly.com": "shopping",
+    "baemin.com": "shopping", "yogiyo.co.kr": "shopping",
+
+    # --- Finance ---
+    "tossinvest.com": "finance", "toss.im": "finance",
+    "kiwoom.com": "finance", "miraeasset.com": "finance",
+    "samsungpop.com": "finance", "securities.com": "finance",
+    "coinbase.com": "finance", "binance.com": "finance",
+    "upbit.com": "finance", "bithumb.com": "finance",
+
+    # --- Education ---
+    "coursera.org": "education", "udemy.com": "education",
+    "khanacademy.org": "education", "edx.org": "education",
+    "medium.com": "education", "dev.to": "education",
+    "hashnode.com": "education", "substack.com": "education",
+    "wikipedia.org": "reference", "namu.wiki": "reference",
+
+    # --- Maps / Navigation ---
+    "map.naver.com": "maps", "maps.google.com": "maps",
+    "google.com/maps": "maps", "kakaomap.com": "maps",
+    "map.kakao.com": "maps",
+
+    # --- Search Engines ---
+    "google.com": "search", "search.naver.com": "search",
+    "search.daum.net": "search", "bing.com": "search",
+    "duckduckgo.com": "search",
+}
+
+# Category display metadata: (label, color, productive_tier)
+# tiers: 2=productive, 1=neutral, 0=leisure
+CATEGORY_META: dict[str, tuple[str, str, int]] = {
+    "ai":            ("AI Tools",      "bold magenta",  2),
+    "dev":           ("Development",   "bold green",    2),
+    "work":          ("Work",          "green",         2),
+    "education":     ("Education",     "cyan",          2),
+    "reference":     ("Reference",     "cyan",          1),
+    "news":          ("News",          "yellow",        1),
+    "search":        ("Search",        "dim",           1),
+    "maps":          ("Maps",          "dim",           1),
+    "finance":       ("Finance",       "yellow",        1),
+    "social":        ("Social Media",  "blue",          0),
+    "video":         ("Video",         "blue",          0),
+    "entertainment": ("Entertainment", "magenta",       0),
+    "gaming":        ("Gaming",        "magenta",       0),
+    "shopping":      ("Shopping",      "red",           0),
+    "other":         ("Other",         "dim",           1),
+}
+
+
+def categorize(domain: str) -> str:
+    """Return category key for a domain. Keyword fallback if not in map."""
+    domain = domain.lower()
+    if domain in CATEGORY_MAP:
+        return CATEGORY_MAP[domain]
+    # Keyword-based fallback
+    for keyword, cat in [
+        ("github", "dev"), ("gitlab", "dev"), ("stackoverflow", "dev"),
+        ("docs.", "reference"), ("developer.", "dev"),
+        ("openai", "ai"), ("anthropic", "ai"), ("claude", "ai"),
+        ("youtube", "video"), ("netflix", "entertainment"),
+        ("instagram", "social"), ("twitter", "social"), ("reddit", "social"),
+        ("amazon", "shopping"), ("naver", "news"), ("kakao", "work"),
+        ("local", "dev"), ("localhost", "dev"),
+    ]:
+        if keyword in domain:
+            return cat
+    return "other"
+
+
+def productivity_score(category_duration: dict[str, int]) -> int:
+    """Return 0-100 productivity score based on category time distribution."""
+    total = sum(category_duration.values())
+    if total == 0:
+        return 0
+    productive = sum(
+        v for k, v in category_duration.items()
+        if CATEGORY_META.get(k, ("", "", 1))[2] == 2
+    )
+    leisure = sum(
+        v for k, v in category_duration.items()
+        if CATEGORY_META.get(k, ("", "", 1))[2] == 0
+    )
+    score = int((productive / total) * 100 - (leisure / total) * 20)
+    return max(0, min(100, score))
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+def positive_int(value: str) -> int:
+    v = int(value)
+    if v <= 0:
+        raise argparse.ArgumentTypeError(f"Must be a positive integer, got {v}")
+    return v
+
+
+# ---------------------------------------------------------------------------
+# Security-safe temporary DB copy
+# ---------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def safe_tmp_copy(db_path: str):
+    """
+    Atomically create a temp file and copy the browser DB into it.
+    Uses mkstemp (not deprecated mktemp) to prevent TOCTOU race conditions.
+    Guarantees cleanup even on SIGINT.
+    """
+    fd, tmp_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        shutil.copy2(db_path, tmp_path)
+        yield tmp_path
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Time conversions
+# ---------------------------------------------------------------------------
+
+def chromium_ts(us: int | None) -> datetime | None:
+    if not us:
         return None
     try:
-        return CHROMIUM_EPOCH + timedelta(microseconds=microseconds)
+        return CHROMIUM_EPOCH + timedelta(microseconds=us)
     except (OverflowError, OSError):
         return None
 
 
-def unix_ts_to_dt(microseconds):
-    if not microseconds:
+def unix_ts(us: int | None) -> datetime | None:
+    if not us:
         return None
     try:
-        return UNIX_EPOCH + timedelta(microseconds=microseconds)
+        return UNIX_EPOCH + timedelta(microseconds=us)
     except (OverflowError, OSError):
         return None
 
 
-def safari_ts_to_dt(seconds):
-    if not seconds:
+def safari_ts(s: float | None) -> datetime | None:
+    if not s:
         return None
     try:
-        return SAFARI_EPOCH + timedelta(seconds=seconds)
+        return SAFARI_EPOCH + timedelta(seconds=s)
     except (OverflowError, OSError):
         return None
 
 
-def duration_to_str(microseconds):
+def duration_str(microseconds: int) -> str:
     if not microseconds or microseconds <= 0:
         return "-"
-    seconds = microseconds / 1_000_000
-    if seconds < 60:
-        return f"{seconds:.0f}초"
-    elif seconds < 3600:
-        return f"{seconds/60:.1f}분"
-    else:
-        return f"{seconds/3600:.1f}시간"
+    s = microseconds / 1_000_000
+    if s < 60:
+        return f"{s:.0f}s"
+    if s < 3600:
+        return f"{s/60:.1f}m"
+    return f"{s/3600:.1f}h"
 
 
-# --------------------------------------------------------------------------- #
-# OS별 브라우저 경로 정의
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+# Browser path detection
+# ---------------------------------------------------------------------------
 
-def _find_firefox_db():
-    """Firefox 프로파일 디렉터리에서 places.sqlite 를 찾아 반환."""
+def _firefox_dbs() -> list[str]:
     home = os.path.expanduser("~")
-    if SYSTEM == "Darwin":
-        base = os.path.join(home, "Library", "Application Support", "Firefox", "Profiles")
-    elif SYSTEM == "Windows":
-        base = os.path.join(os.environ.get("APPDATA", ""), "Mozilla", "Firefox", "Profiles")
-    else:  # Linux
-        base = os.path.join(home, ".mozilla", "firefox")
-
+    bases = {
+        "Darwin":  os.path.join(home, "Library", "Application Support", "Firefox", "Profiles"),
+        "Windows": os.path.join(os.environ.get("APPDATA", ""), "Mozilla", "Firefox", "Profiles"),
+        "Linux":   os.path.join(home, ".mozilla", "firefox"),
+    }
+    base = bases.get(SYSTEM, "")
     if not os.path.isdir(base):
         return []
-
-    # default-release 프로파일 우선, 없으면 places.sqlite 가 있는 첫 번째 디렉터리
-    candidates = []
+    result = []
     for entry in os.listdir(base):
-        profile_dir = os.path.join(base, entry)
-        db = os.path.join(profile_dir, "places.sqlite")
-        if os.path.isfile(db):
+        profile = os.path.join(base, entry)
+        db = os.path.join(profile, "places.sqlite")
+        # Resolve symlinks to prevent following malicious links outside the profile dir
+        real_db = os.path.realpath(db)
+        if os.path.isfile(real_db) and real_db.startswith(os.path.realpath(base)):
             if "default-release" in entry or "default" in entry:
-                candidates.insert(0, db)
+                result.insert(0, real_db)
             else:
-                candidates.append(db)
-    return candidates
+                result.append(real_db)
+    return result
 
 
-def _arc_windows_paths():
-    """Windows Store 앱으로 설치된 Arc 경로 (패키지 해시가 달라 glob 사용)."""
+def _arc_windows() -> list[str]:
     local = os.environ.get("LOCALAPPDATA", "")
-    pattern = os.path.join(
+    return glob.glob(os.path.join(
         local, "Packages", "TheBrowserCompany.Arc_*",
         "LocalCache", "Local", "Arc", "User Data", "Default", "History"
-    )
-    return glob.glob(pattern)
+    ))
 
 
-def build_browser_catalog():
-    """현재 OS에 맞는 브라우저 경로 딕셔너리 반환."""
+def _browser_catalog() -> dict:
     home = os.path.expanduser("~")
-    local = os.environ.get("LOCALAPPDATA", "")   # Windows only
-    roaming = os.environ.get("APPDATA", "")       # Windows only
+    local = os.environ.get("LOCALAPPDATA", "")
+    roaming = os.environ.get("APPDATA", "")
 
     if SYSTEM == "Darwin":
         sup = os.path.join(home, "Library", "Application Support")
-        catalog = {
-            "arc":     {"name": "Arc",     "type": "chromium", "paths": [
-                os.path.join(sup, "Arc", "User Data", "Default", "History"),
-            ]},
-            "chrome":  {"name": "Chrome",  "type": "chromium", "paths": [
-                os.path.join(sup, "Google", "Chrome", "Default", "History"),
-            ]},
-            "brave":   {"name": "Brave",   "type": "chromium", "paths": [
-                os.path.join(sup, "BraveSoftware", "Brave-Browser", "Default", "History"),
-            ]},
-            "edge":    {"name": "Edge",    "type": "chromium", "paths": [
-                os.path.join(sup, "Microsoft Edge", "Default", "History"),
-            ]},
-            "vivaldi": {"name": "Vivaldi", "type": "chromium", "paths": [
-                os.path.join(sup, "Vivaldi", "Default", "History"),
-            ]},
-            "opera":   {"name": "Opera",   "type": "chromium", "paths": [
-                os.path.join(sup, "com.operasoftware.Opera", "Default", "History"),
-            ]},
-            "safari":  {"name": "Safari",  "type": "safari",   "paths": [
-                os.path.join(home, "Library", "Safari", "History.db"),
-            ]},
-            "firefox": {"name": "Firefox", "type": "firefox",  "paths": _find_firefox_db()},
+        return {
+            "arc":     ("Arc",     "chromium", [os.path.join(sup, "Arc", "User Data", "Default", "History")]),
+            "chrome":  ("Chrome",  "chromium", [os.path.join(sup, "Google", "Chrome", "Default", "History")]),
+            "brave":   ("Brave",   "chromium", [os.path.join(sup, "BraveSoftware", "Brave-Browser", "Default", "History")]),
+            "edge":    ("Edge",    "chromium", [os.path.join(sup, "Microsoft Edge", "Default", "History")]),
+            "vivaldi": ("Vivaldi", "chromium", [os.path.join(sup, "Vivaldi", "Default", "History")]),
+            "opera":   ("Opera",   "chromium", [os.path.join(sup, "com.operasoftware.Opera", "Default", "History")]),
+            "safari":  ("Safari",  "safari",   [os.path.join(home, "Library", "Safari", "History.db")]),
+            "firefox": ("Firefox", "firefox",  _firefox_dbs()),
         }
-
     elif SYSTEM == "Windows":
-        catalog = {
-            "arc":     {"name": "Arc",     "type": "chromium", "paths": _arc_windows_paths()},
-            "chrome":  {"name": "Chrome",  "type": "chromium", "paths": [
-                os.path.join(local, "Google", "Chrome", "User Data", "Default", "History"),
-            ]},
-            "brave":   {"name": "Brave",   "type": "chromium", "paths": [
-                os.path.join(local, "BraveSoftware", "Brave-Browser", "User Data", "Default", "History"),
-            ]},
-            "edge":    {"name": "Edge",    "type": "chromium", "paths": [
-                os.path.join(local, "Microsoft", "Edge", "User Data", "Default", "History"),
-            ]},
-            "vivaldi": {"name": "Vivaldi", "type": "chromium", "paths": [
-                os.path.join(local, "Vivaldi", "User Data", "Default", "History"),
-            ]},
-            "opera":   {"name": "Opera",   "type": "chromium", "paths": [
-                os.path.join(roaming, "Opera Software", "Opera Stable", "History"),
-            ]},
-            "firefox": {"name": "Firefox", "type": "firefox",  "paths": _find_firefox_db()},
+        return {
+            "arc":     ("Arc",     "chromium", _arc_windows()),
+            "chrome":  ("Chrome",  "chromium", [os.path.join(local, "Google", "Chrome", "User Data", "Default", "History")]),
+            "brave":   ("Brave",   "chromium", [os.path.join(local, "BraveSoftware", "Brave-Browser", "User Data", "Default", "History")]),
+            "edge":    ("Edge",    "chromium", [os.path.join(local, "Microsoft", "Edge", "User Data", "Default", "History")]),
+            "vivaldi": ("Vivaldi", "chromium", [os.path.join(local, "Vivaldi", "User Data", "Default", "History")]),
+            "opera":   ("Opera",   "chromium", [os.path.join(roaming, "Opera Software", "Opera Stable", "History")]),
+            "firefox": ("Firefox", "firefox",  _firefox_dbs()),
         }
-
     else:  # Linux
-        config = os.path.join(home, ".config")
-        catalog = {
-            "chrome":  {"name": "Chrome",  "type": "chromium", "paths": [
-                os.path.join(config, "google-chrome", "Default", "History"),
-            ]},
-            "brave":   {"name": "Brave",   "type": "chromium", "paths": [
-                os.path.join(config, "BraveSoftware", "Brave-Browser", "Default", "History"),
-            ]},
-            "edge":    {"name": "Edge",    "type": "chromium", "paths": [
-                os.path.join(config, "microsoft-edge", "Default", "History"),
-            ]},
-            "vivaldi": {"name": "Vivaldi", "type": "chromium", "paths": [
-                os.path.join(config, "vivaldi", "Default", "History"),
-            ]},
-            "opera":   {"name": "Opera",   "type": "chromium", "paths": [
-                os.path.join(config, "opera", "History"),
-            ]},
-            "firefox": {"name": "Firefox", "type": "firefox",  "paths": _find_firefox_db()},
+        cfg = os.path.join(home, ".config")
+        return {
+            "chrome":  ("Chrome",  "chromium", [os.path.join(cfg, "google-chrome", "Default", "History")]),
+            "brave":   ("Brave",   "chromium", [os.path.join(cfg, "BraveSoftware", "Brave-Browser", "Default", "History")]),
+            "edge":    ("Edge",    "chromium", [os.path.join(cfg, "microsoft-edge", "Default", "History")]),
+            "vivaldi": ("Vivaldi", "chromium", [os.path.join(cfg, "vivaldi", "Default", "History")]),
+            "opera":   ("Opera",   "chromium", [os.path.join(cfg, "opera", "History")]),
+            "firefox": ("Firefox", "firefox",  _firefox_dbs()),
         }
 
-    return catalog
 
-
-def find_available_browsers():
-    catalog = build_browser_catalog()
+def find_available_browsers() -> list[tuple]:
+    """Return list of (key, name, db_type, path) for installed browsers."""
     available = []
-    for key, info in catalog.items():
-        for path in info["paths"]:
+    for key, (name, db_type, paths) in _browser_catalog().items():
+        for path in paths:
             if os.path.isfile(path):
-                available.append((key, info["name"], info["type"], path))
+                available.append((key, name, db_type, path))
                 break
     return available
 
 
-# --------------------------------------------------------------------------- #
-# DB 읽기
-# --------------------------------------------------------------------------- #
-
-def _copy_and_connect(db_path):
-    """브라우저가 열려 있어도 읽을 수 있도록 임시 복사 후 연결."""
-    tmp = tempfile.mktemp(suffix=".db")
-    shutil.copy2(db_path, tmp)
-    conn = sqlite3.connect(tmp)
-    conn.row_factory = sqlite3.Row
-    return conn, tmp
+def filter_browsers(available: list, browser_filter: str | None) -> list:
+    if not browser_filter:
+        return available
+    key = browser_filter.strip().lower()
+    result = [b for b in available if b[0] == key]
+    if not result:
+        console.print(f"[red]Browser '{browser_filter}' not found. Run [bold]browser-history browsers[/bold] to list available browsers.[/red]")
+    return result
 
 
-def read_chromium_history(db_path, days=None):
-    tmp = None
+# ---------------------------------------------------------------------------
+# DB reading
+# ---------------------------------------------------------------------------
+
+def _read_chromium(db_path: str, days: int | None) -> list[dict]:
     try:
-        conn, tmp = _copy_and_connect(db_path)
-        c = conn.cursor()
-        if days:
-            cutoff = datetime.now() - timedelta(days=days)
-            cutoff_ts = int((cutoff - CHROMIUM_EPOCH).total_seconds() * 1_000_000)
-            c.execute("""
-                SELECT u.url, u.title, u.visit_count,
-                       v.visit_time, v.visit_duration
-                FROM visits v JOIN urls u ON v.url = u.id
-                WHERE v.visit_time > ?
-                ORDER BY v.visit_time DESC
-            """, (cutoff_ts,))
-        else:
-            c.execute("""
-                SELECT u.url, u.title, u.visit_count,
-                       v.visit_time, v.visit_duration
-                FROM visits v JOIN urls u ON v.url = u.id
-                ORDER BY v.visit_time DESC
-            """)
-        rows = [dict(r) for r in c.fetchall()]
-        conn.close()
-        return rows
+        with safe_tmp_copy(db_path) as tmp:
+            conn = sqlite3.connect(tmp)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            if days:
+                cutoff = int(((datetime.now() - timedelta(days=days)) - CHROMIUM_EPOCH).total_seconds() * 1_000_000)
+                c.execute(
+                    "SELECT u.url, u.title, u.visit_count, v.visit_time, v.visit_duration "
+                    "FROM visits v JOIN urls u ON v.url=u.id WHERE v.visit_time>? ORDER BY v.visit_time DESC",
+                    (cutoff,)
+                )
+            else:
+                c.execute(
+                    "SELECT u.url, u.title, u.visit_count, v.visit_time, v.visit_duration "
+                    "FROM visits v JOIN urls u ON v.url=u.id ORDER BY v.visit_time DESC"
+                )
+            rows = [dict(r) for r in c.fetchall()]
+            conn.close()
+            return rows
     except PermissionError:
-        console.print("[yellow]  접근 권한 없음 — 브라우저가 열려 있다면 닫아보세요.[/yellow]")
+        console.print("[yellow]  Permission denied — try closing the browser first.[/yellow]")
         return []
     except Exception as e:
-        console.print(f"[red]  DB 읽기 오류: {e}[/red]")
+        console.print(f"[red]  Read error: {type(e).__name__}[/red]")
         return []
-    finally:
-        if tmp and os.path.exists(tmp):
-            os.remove(tmp)
 
 
-def read_firefox_history(db_path, days=None):
-    tmp = None
+def _read_firefox(db_path: str, days: int | None) -> list[dict]:
     try:
-        conn, tmp = _copy_and_connect(db_path)
-        c = conn.cursor()
-        if days:
-            cutoff = datetime.now() - timedelta(days=days)
-            cutoff_ts = int((cutoff - UNIX_EPOCH).total_seconds() * 1_000_000)
-            c.execute("""
-                SELECT p.url, p.title, p.visit_count,
-                       v.visit_date
-                FROM moz_historyvisits v JOIN moz_places p ON v.place_id = p.id
-                WHERE v.visit_date > ?
-                ORDER BY v.visit_date DESC
-            """, (cutoff_ts,))
-        else:
-            c.execute("""
-                SELECT p.url, p.title, p.visit_count,
-                       v.visit_date
-                FROM moz_historyvisits v JOIN moz_places p ON v.place_id = p.id
-                ORDER BY v.visit_date DESC
-            """)
-        rows = [dict(r) for r in c.fetchall()]
-        conn.close()
-        return rows
+        with safe_tmp_copy(db_path) as tmp:
+            conn = sqlite3.connect(tmp)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            if days:
+                cutoff = int(((datetime.now() - timedelta(days=days)) - UNIX_EPOCH).total_seconds() * 1_000_000)
+                c.execute(
+                    "SELECT p.url, p.title, p.visit_count, v.visit_date "
+                    "FROM moz_historyvisits v JOIN moz_places p ON v.place_id=p.id "
+                    "WHERE v.visit_date>? ORDER BY v.visit_date DESC",
+                    (cutoff,)
+                )
+            else:
+                c.execute(
+                    "SELECT p.url, p.title, p.visit_count, v.visit_date "
+                    "FROM moz_historyvisits v JOIN moz_places p ON v.place_id=p.id "
+                    "ORDER BY v.visit_date DESC"
+                )
+            rows = [dict(r) for r in c.fetchall()]
+            conn.close()
+            return rows
     except PermissionError:
-        console.print("[yellow]  Firefox: 접근 권한 없음.[/yellow]")
+        console.print("[yellow]  Firefox: Permission denied.[/yellow]")
         return []
     except Exception as e:
-        console.print(f"[red]  Firefox DB 읽기 오류: {e}[/red]")
+        console.print(f"[red]  Firefox read error: {type(e).__name__}[/red]")
         return []
-    finally:
-        if tmp and os.path.exists(tmp):
-            os.remove(tmp)
 
 
-def read_safari_history(db_path, days=None):
-    tmp = None
+def _read_safari(db_path: str, days: int | None) -> list[dict]:
     try:
-        conn, tmp = _copy_and_connect(db_path)
-        c = conn.cursor()
-        if days:
-            cutoff = datetime.now() - timedelta(days=days)
-            cutoff_ts = (cutoff - SAFARI_EPOCH).total_seconds()
-            c.execute("""
-                SELECT hi.url, hv.title, hv.visit_time
-                FROM history_visits hv JOIN history_items hi ON hv.history_item = hi.id
-                WHERE hv.visit_time > ?
-                ORDER BY hv.visit_time DESC
-            """, (cutoff_ts,))
-        else:
-            c.execute("""
-                SELECT hi.url, hv.title, hv.visit_time
-                FROM history_visits hv JOIN history_items hi ON hv.history_item = hi.id
-                ORDER BY hv.visit_time DESC
-            """)
-        rows = [dict(r) for r in c.fetchall()]
-        conn.close()
-        return rows
+        with safe_tmp_copy(db_path) as tmp:
+            conn = sqlite3.connect(tmp)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            if days:
+                cutoff = ((datetime.now() - timedelta(days=days)) - SAFARI_EPOCH).total_seconds()
+                c.execute(
+                    "SELECT hi.url, hv.title, hv.visit_time "
+                    "FROM history_visits hv JOIN history_items hi ON hv.history_item=hi.id "
+                    "WHERE hv.visit_time>? ORDER BY hv.visit_time DESC",
+                    (cutoff,)
+                )
+            else:
+                c.execute(
+                    "SELECT hi.url, hv.title, hv.visit_time "
+                    "FROM history_visits hv JOIN history_items hi ON hv.history_item=hi.id "
+                    "ORDER BY hv.visit_time DESC"
+                )
+            rows = [dict(r) for r in c.fetchall()]
+            conn.close()
+            return rows
     except PermissionError:
         console.print(
-            "[yellow]  Safari: 접근 권한 없음.\n"
-            "  시스템 설정 > 개인 정보 보호 > 전체 디스크 접근에서 터미널을 추가하세요.[/yellow]"
+            "[yellow]  Safari: Permission denied.\n"
+            "  System Settings > Privacy & Security > Full Disk Access — add your terminal app.[/yellow]"
         )
         return []
     except Exception as e:
-        console.print(f"[red]  Safari DB 읽기 오류: {e}[/red]")
+        console.print(f"[red]  Safari read error: {type(e).__name__}[/red]")
         return []
-    finally:
-        if tmp and os.path.exists(tmp):
-            os.remove(tmp)
 
 
-def load_history(browser_key, db_type, db_path, days=None):
+def load_history(browser_key: str, db_type: str, db_path: str, days: int | None) -> list[dict]:
     if db_type == "firefox":
-        raw = read_firefox_history(db_path, days)
-        return [
-            {
-                "url": r.get("url", ""),
-                "title": r.get("title", ""),
-                "visit_time": unix_ts_to_dt(r.get("visit_date")),
-                "visit_duration": 0,
-                "visit_count": r.get("visit_count", 1),
-            }
-            for r in raw
-        ]
+        raw = _read_firefox(db_path, days)
+        return [{"url": r.get("url",""), "title": r.get("title",""),
+                 "visit_time": unix_ts(r.get("visit_date")),
+                 "visit_duration": 0, "visit_count": r.get("visit_count", 1),
+                 "browser": browser_key} for r in raw]
     elif db_type == "safari":
-        raw = read_safari_history(db_path, days)
-        return [
-            {
-                "url": r.get("url", ""),
-                "title": r.get("title", ""),
-                "visit_time": safari_ts_to_dt(r.get("visit_time")),
-                "visit_duration": 0,
-                "visit_count": 1,
-            }
-            for r in raw
-        ]
-    else:  # chromium
-        raw = read_chromium_history(db_path, days)
-        return [
-            {
-                "url": r.get("url", ""),
-                "title": r.get("title", ""),
-                "visit_time": chromium_ts_to_dt(r.get("visit_time")),
-                "visit_duration": r.get("visit_duration", 0),
-                "visit_count": r.get("visit_count", 1),
-            }
-            for r in raw
-        ]
+        raw = _read_safari(db_path, days)
+        return [{"url": r.get("url",""), "title": r.get("title",""),
+                 "visit_time": safari_ts(r.get("visit_time")),
+                 "visit_duration": 0, "visit_count": 1,
+                 "browser": browser_key} for r in raw]
+    else:
+        raw = _read_chromium(db_path, days)
+        return [{"url": r.get("url",""), "title": r.get("title",""),
+                 "visit_time": chromium_ts(r.get("visit_time")),
+                 "visit_duration": r.get("visit_duration", 0) or 0,
+                 "visit_count": r.get("visit_count", 1),
+                 "browser": browser_key} for r in raw]
 
 
-# --------------------------------------------------------------------------- #
-# 분석
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+# URL utilities
+# ---------------------------------------------------------------------------
 
-def get_domain(url):
+def get_domain(url: str) -> str:
     try:
-        parsed = urlparse(url)
-        domain = parsed.netloc
-        if domain.startswith("www."):
-            domain = domain[4:]
-        return domain or url[:50]
+        netloc = urlparse(url).netloc
+        return netloc[4:] if netloc.startswith("www.") else netloc
     except Exception:
         return url[:50]
 
 
-def is_internal(url):
+def is_internal(url: str) -> bool:
     return not url or any(url.startswith(p) for p in INTERNAL_PREFIXES)
 
 
-def analyze_visits(visits):
-    domain_stats = defaultdict(lambda: {
-        "count": 0, "total_duration": 0, "last_visit": None,
+# ---------------------------------------------------------------------------
+# Core analysis
+# ---------------------------------------------------------------------------
+
+def analyze_visits(visits: list[dict]) -> dict:
+    domain_stats: dict = defaultdict(lambda: {
+        "count": 0, "total_duration": 0, "last_visit": None, "category": None,
     })
-    hourly_counts = defaultdict(int)
-    daily_counts = defaultdict(int)
-    weekday_counts = defaultdict(int)
+    hourly: dict[int, int] = defaultdict(int)
+    daily: dict[str, int] = defaultdict(int)
+    weekday: dict[int, int] = defaultdict(int)
+    category_duration: dict[str, int] = defaultdict(int)
+    category_count: dict[str, int] = defaultdict(int)
 
     for v in visits:
         url = v.get("url", "")
@@ -409,271 +548,691 @@ def analyze_visits(visits):
         domain = get_domain(url)
         if not domain:
             continue
+        cat = categorize(domain)
+        dur = v.get("visit_duration", 0) or 0
 
         domain_stats[domain]["count"] += 1
-        domain_stats[domain]["total_duration"] += v.get("visit_duration", 0) or 0
+        domain_stats[domain]["total_duration"] += dur
+        domain_stats[domain]["category"] = cat
+
+        category_duration[cat] += dur
+        category_count[cat] += 1
 
         dt = v.get("visit_time")
         if dt:
             lv = domain_stats[domain]["last_visit"]
             if lv is None or dt > lv:
                 domain_stats[domain]["last_visit"] = dt
-            hourly_counts[dt.hour] += 1
-            daily_counts[dt.strftime("%Y-%m-%d")] += 1
-            weekday_counts[dt.weekday()] += 1
+            hourly[dt.hour] += 1
+            daily[dt.strftime("%Y-%m-%d")] += 1
+            weekday[dt.weekday()] += 1
 
-    return domain_stats, hourly_counts, daily_counts, weekday_counts
+    return {
+        "domain_stats": dict(domain_stats),
+        "hourly": dict(hourly),
+        "daily": dict(daily),
+        "weekday": dict(weekday),
+        "category_duration": dict(category_duration),
+        "category_count": dict(category_count),
+    }
 
 
-# --------------------------------------------------------------------------- #
-# 출력
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+# Display helpers
+# ---------------------------------------------------------------------------
 
-def show_top_sites(domain_stats, limit=20, sort_by="count"):
+DAYS_ABBR = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+DAYS_KO   = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _score_color(score: int) -> str:
+    if score >= 70: return "bold green"
+    if score >= 40: return "yellow"
+    return "red"
+
+
+def show_summary(visits: list[dict], browser_name: str, result: dict, days: int | None) -> None:
+    total = len(visits)
+    total_dur = sum(v.get("visit_duration", 0) or 0 for v in visits)
+    unique = len(set(get_domain(v["url"]) for v in visits if not is_internal(v.get("url",""))))
+    period = f"last {days}d" if days else "all time"
+
+    score = productivity_score(result["category_duration"])
+    score_col = _score_color(score)
+
+    times = [v["visit_time"] for v in visits if v.get("visit_time")]
+    date_range = ""
+    if times:
+        date_range = f"{min(times).strftime('%Y-%m-%d')} → {max(times).strftime('%Y-%m-%d')}"
+
+    t = Text()
+    t.append("  Visits:           ", "dim")
+    t.append(f"{total:,}\n", "bold green")
+    t.append("  Unique domains:   ", "dim")
+    t.append(f"{unique:,}\n", "bold cyan")
+    t.append("  Total time:       ", "dim")
+    t.append(f"{duration_str(total_dur)}\n", "bold yellow")
+    t.append("  Productivity:     ", "dim")
+    t.append(f"{score}/100\n", score_col)
+    if date_range:
+        t.append("  Period:           ", "dim")
+        t.append(date_range, "bold white")
+
+    console.print(Panel(t, title=f"[bold magenta]{browser_name}  ({period})[/bold magenta]", border_style="magenta"))
+
+
+def show_top_sites(domain_stats: dict, limit: int = 20, sort_by: str = "count") -> None:
     key_fn = (lambda x: x[1]["total_duration"]) if sort_by == "duration" else (lambda x: x[1]["count"])
-    sorted_domains = sorted(domain_stats.items(), key=key_fn, reverse=True)[:limit]
+    items = sorted(domain_stats.items(), key=key_fn, reverse=True)[:limit]
 
-    table = Table(
-        title=f"자주 방문한 웹사이트 Top {limit}",
-        box=box.ROUNDED, header_style="bold cyan",
-    )
-    table.add_column("#", style="dim", width=4, justify="right")
-    table.add_column("도메인", style="bold white", min_width=25)
-    table.add_column("방문 수", justify="right", style="green")
-    table.add_column("총 체류 시간", justify="right", style="yellow")
-    table.add_column("마지막 방문", justify="right", style="blue")
+    table = Table(title=f"Top {limit} Sites", box=box.ROUNDED, header_style="bold cyan")
+    table.add_column("#",      style="dim",        width=4,  justify="right")
+    table.add_column("Domain", style="bold white",  min_width=24)
+    table.add_column("Cat",    style="dim",         width=7)
+    table.add_column("Visits", justify="right",     style="green")
+    table.add_column("Time",   justify="right",     style="yellow")
+    table.add_column("Last",   justify="right",     style="blue")
 
-    for i, (domain, stats) in enumerate(sorted_domains, 1):
-        last = stats["last_visit"]
+    for i, (domain, s) in enumerate(items, 1):
+        cat = s.get("category") or categorize(domain)
+        cat_label, cat_color, _ = CATEGORY_META.get(cat, (cat, "dim", 1))
+        last = s["last_visit"]
         table.add_row(
             str(i), domain,
-            f"{stats['count']:,}",
-            duration_to_str(stats["total_duration"]),
+            f"[{cat_color}]{cat_label[:6]}[/{cat_color}]",
+            f"{s['count']:,}",
+            duration_str(s["total_duration"]),
             last.strftime("%m/%d %H:%M") if last else "-",
         )
     console.print(table)
 
 
-def show_hourly_heatmap(hourly_counts):
-    if not hourly_counts:
+def show_category_breakdown(cat_dur: dict, cat_cnt: dict) -> None:
+    total_dur = sum(cat_dur.values()) or 1
+    total_cnt = sum(cat_cnt.values()) or 1
+    sorted_cats = sorted(cat_dur.items(), key=lambda x: x[1], reverse=True)
+
+    table = Table(title="Category Breakdown", box=box.ROUNDED, header_style="bold cyan")
+    table.add_column("Category",  min_width=14, style="bold white")
+    table.add_column("Time",      justify="right", style="yellow")
+    table.add_column("Share",     justify="right", width=7)
+    table.add_column("Visits",    justify="right", style="green")
+    table.add_column("Bar", min_width=20)
+
+    for cat, dur in sorted_cats:
+        label, color, _ = CATEGORY_META.get(cat, (cat, "dim", 1))
+        ratio = dur / total_dur
+        bar = "█" * int(ratio * 20)
+        share = f"{ratio*100:.1f}%"
+        cnt = cat_cnt.get(cat, 0)
+        table.add_row(
+            f"[{color}]{label}[/{color}]",
+            duration_str(dur), share,
+            f"{cnt:,}",
+            f"[{color}]{bar}[/{color}]",
+        )
+    console.print(table)
+
+
+def show_hourly_heatmap(hourly: dict) -> None:
+    if not hourly:
         return
-    max_count = max(hourly_counts.values())
+    mx = max(hourly.values())
     blocks = ["░", "▒", "▓", "█"]
-
-    console.print("\n[bold cyan]시간대별 방문 패턴[/bold cyan]")
-    console.print("[dim]0시                    12시                   23시[/dim]")
+    console.print("\n[bold cyan]Hourly pattern[/bold cyan]")
+    console.print("[dim]0h                     12h                    23h[/dim]")
     bar = ""
-    for hour in range(24):
-        count = hourly_counts.get(hour, 0)
-        ratio = count / max_count if max_count else 0
-        block = blocks[int(ratio * (len(blocks) - 1))]
-        if ratio == 0:
-            bar += f"[dim]{block}[/dim]"
-        elif ratio < 0.33:
-            bar += f"[blue]{block}[/blue]"
-        elif ratio < 0.66:
-            bar += f"[yellow]{block}[/yellow]"
+    for h in range(24):
+        r = hourly.get(h, 0) / mx if mx else 0
+        blk = blocks[int(r * (len(blocks) - 1))]
+        if r == 0:
+            bar += f"[dim]{blk}[/dim]"
+        elif r < 0.33:
+            bar += f"[blue]{blk}[/blue]"
+        elif r < 0.66:
+            bar += f"[yellow]{blk}[/yellow]"
         else:
-            bar += f"[red]{block}[/red]"
+            bar += f"[red]{blk}[/red]"
     console.print(bar)
-
-    peaks = sorted(hourly_counts.items(), key=lambda x: x[1], reverse=True)[:3]
-    peak_str = ", ".join(f"[bold]{h}시[/bold]({c:,}회)" for h, c in peaks)
-    console.print(f"  피크 시간대: {peak_str}")
+    peaks = sorted(hourly.items(), key=lambda x: x[1], reverse=True)[:3]
+    console.print("  Peak: " + ", ".join(f"[bold]{h}:00[/bold]({c:,})" for h, c in peaks))
 
 
-def show_weekday_chart(weekday_counts):
-    if not weekday_counts:
+def show_weekday_chart(weekday: dict) -> None:
+    if not weekday:
         return
-    days_ko = ["월", "화", "수", "목", "금", "토", "일"]
-    max_count = max(weekday_counts.values())
-    console.print("\n[bold cyan]요일별 방문 패턴[/bold cyan]")
+    mx = max(weekday.values()) or 1
+    console.print("\n[bold cyan]Day of week[/bold cyan]")
     for wd in range(7):
-        count = weekday_counts.get(wd, 0)
-        ratio = count / max_count if max_count else 0
-        bar = "█" * int(ratio * 30)
+        cnt = weekday.get(wd, 0)
+        r = cnt / mx
+        bar = "█" * int(r * 28)
         color = "magenta" if wd >= 5 else "green"
-        console.print(f"  {days_ko[wd]} [{color}]{bar:<30}[/{color}] {count:,}")
+        console.print(f"  {DAYS_ABBR[wd]} [{color}]{bar:<28}[/{color}] {cnt:,}")
 
 
-def show_daily_trend(daily_counts, days=14):
-    if not daily_counts:
+def show_calendar_heatmap(daily: dict, weeks: int = 24) -> None:
+    """GitHub-style contribution calendar."""
+    if not daily:
         return
-    sorted_days = sorted(daily_counts.items())[-days:]
-    if not sorted_days:
+
+    today = datetime.now().date()
+    # Align start to Monday
+    start = (today - timedelta(weeks=weeks))
+    start = start - timedelta(days=start.weekday())
+
+    all_counts = list(daily.values())
+    mx = max(all_counts) if all_counts else 1
+    p25 = sorted(all_counts)[int(len(all_counts) * 0.25)] if all_counts else 1
+    p50 = sorted(all_counts)[int(len(all_counts) * 0.50)] if all_counts else 1
+    p75 = sorted(all_counts)[int(len(all_counts) * 0.75)] if all_counts else 1
+
+    def cell(date_str: str) -> str:
+        c = daily.get(date_str, 0)
+        if c == 0:
+            return "[dim]░[/dim]"
+        elif c <= p25:
+            return "[blue]▒[/blue]"
+        elif c <= p50:
+            return "[cyan]▒[/cyan]"
+        elif c <= p75:
+            return "[green]▓[/green]"
+        else:
+            return "[bold green]█[/bold green]"
+
+    # Month labels row
+    month_row = "      "
+    col_dates = []
+    d = start
+    while d <= today:
+        col_dates.append(d)
+        d += timedelta(weeks=1)
+
+    prev_month = -1
+    for d in col_dates:
+        if d.month != prev_month:
+            lbl = d.strftime("%b")
+            month_row += lbl[:3] + " "
+            prev_month = d.month
+        else:
+            month_row += "    "
+
+    console.print(f"\n[bold cyan]Activity calendar (last {weeks} weeks)[/bold cyan]")
+    console.print(f"[dim]{month_row}[/dim]")
+
+    for wd in range(7):
+        row = f"  {DAYS_ABBR[wd]} "
+        d = start + timedelta(days=wd)
+        while d <= today:
+            row += cell(d.strftime("%Y-%m-%d")) + "  "
+            d += timedelta(weeks=1)
+        console.print(row)
+
+    # Legend
+    console.print("[dim]  Low [blue]▒[/blue] [cyan]▒[/cyan] [green]▓[/green] [bold green]█[/bold green] High[/dim]")
+
+
+def show_daily_trend(daily: dict, n: int = 14) -> None:
+    if not daily:
         return
-    max_count = max(c for _, c in sorted_days)
-    console.print(f"\n[bold cyan]최근 {days}일 방문 추이[/bold cyan]")
-    for date_str, count in sorted_days:
+    items = sorted(daily.items())[-n:]
+    mx = max(c for _, c in items) or 1
+    console.print(f"\n[bold cyan]Last {n} days[/bold cyan]")
+    for ds, cnt in items:
         try:
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            dt = datetime.strptime(ds, "%Y-%m-%d")
             label = dt.strftime("%m/%d")
-            wd = ["월", "화", "수", "목", "금", "토", "일"][dt.weekday()]
+            wd = DAYS_ABBR[dt.weekday()]
             color = "magenta" if dt.weekday() >= 5 else "cyan"
         except Exception:
-            label, wd, color = date_str[-5:], "", "cyan"
-        bar = "█" * int((count / max_count if max_count else 0) * 25)
-        console.print(f"  {label}({wd}) [{color}]{bar:<25}[/{color}] {count:,}")
+            label, wd, color = ds[-5:], "  ", "cyan"
+        bar = "█" * int((cnt / mx) * 24)
+        console.print(f"  {label}({wd}) [{color}]{bar:<24}[/{color}] {cnt:,}")
 
 
-def show_summary_stats(visits, browser_name, days=None):
-    total = len(visits)
-    total_duration = sum(v.get("visit_duration", 0) or 0 for v in visits)
-    unique_domains = len(set(
-        get_domain(v["url"]) for v in visits if not is_internal(v.get("url", ""))
-    ))
-    period = f"최근 {days}일" if days else "전체"
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
 
-    stats_text = Text()
-    stats_text.append("  총 방문 수:      ", style="dim")
-    stats_text.append(f"{total:,}회\n", style="bold green")
-    stats_text.append("  방문 도메인 수:  ", style="dim")
-    stats_text.append(f"{unique_domains:,}개\n", style="bold cyan")
-    stats_text.append("  총 체류 시간:    ", style="dim")
-    stats_text.append(f"{duration_to_str(total_duration)}\n", style="bold yellow")
-
-    times = [v["visit_time"] for v in visits if v.get("visit_time")]
-    if times:
-        stats_text.append("  분석 기간:       ", style="dim")
-        stats_text.append(
-            f"{min(times).strftime('%Y-%m-%d')} ~ {max(times).strftime('%Y-%m-%d')}",
-            style="bold white",
-        )
-
-    console.print(Panel(
-        stats_text,
-        title=f"[bold magenta]{browser_name} 브라우저 통계 ({period})[/bold magenta]",
-        border_style="magenta",
-    ))
-
-
-# --------------------------------------------------------------------------- #
-# 명령 핸들러
-# --------------------------------------------------------------------------- #
-
-def cmd_stats(args):
-    available = find_available_browsers()
-    if not available:
-        console.print("[red]설치된 브라우저를 찾을 수 없습니다.[/red]")
-        return
-
-    if args.browser:
-        available = [(k, n, t, p) for k, n, t, p in available if k == args.browser.lower()]
-        if not available:
-            console.print(f"[red]브라우저 '{args.browser}'를 찾을 수 없습니다.[/red]")
-            return
-
-    days = args.days
-
-    for browser_key, browser_name, db_type, db_path in available:
-        console.print(f"\n[bold blue]>>> {browser_name} 분석 중...[/bold blue]")
-        visits = load_history(browser_key, db_type, db_path, days)
-        if not visits:
-            console.print("[yellow]  방문 기록이 없습니다.[/yellow]")
+def _visits_to_rows(visits: list[dict]) -> list[dict]:
+    rows = []
+    for v in visits:
+        url = v.get("url", "")
+        if is_internal(url):
             continue
+        dt = v.get("visit_time")
+        rows.append({
+            "timestamp":  dt.isoformat() if dt else "",
+            "url":        url,
+            "domain":     get_domain(url),
+            "category":   categorize(get_domain(url)),
+            "title":      v.get("title", ""),
+            "duration_s": round((v.get("visit_duration", 0) or 0) / 1_000_000, 2),
+            "browser":    v.get("browser", ""),
+        })
+    return rows
 
-        show_summary_stats(visits, browser_name, days)
-        domain_stats, hourly_counts, daily_counts, weekday_counts = analyze_visits(visits)
-        show_top_sites(domain_stats, limit=args.top, sort_by=args.sort)
-        show_hourly_heatmap(hourly_counts)
-        show_weekday_chart(weekday_counts)
-        show_daily_trend(daily_counts, days=min(14, days or 14))
+
+def export_csv(visits: list[dict], path: str | None) -> None:
+    rows = _visits_to_rows(visits)
+    fields = ["timestamp", "url", "domain", "category", "title", "duration_s", "browser"]
+    if path:
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            w.writerows(rows)
+        console.print(f"[green]Exported {len(rows):,} rows → {path}[/green]")
+    else:
+        buf = StringIO()
+        w = csv.DictWriter(buf, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+        print(buf.getvalue())
 
 
-def cmd_top(args):
+def export_json(visits: list[dict], path: str | None, result: dict) -> None:
+    rows = _visits_to_rows(visits)
+    payload = {
+        "generated_at": datetime.now().isoformat(),
+        "summary": {
+            "total_visits": len(visits),
+            "unique_domains": len(set(r["domain"] for r in rows)),
+            "total_duration_s": sum(r["duration_s"] for r in rows),
+            "category_duration_s": {k: round(v / 1_000_000, 2) for k, v in result["category_duration"].items()},
+            "productivity_score": productivity_score(result["category_duration"]),
+        },
+        "visits": rows,
+    }
+    if path:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        console.print(f"[green]Exported {len(rows):,} records → {path}[/green]")
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def export_html(visits: list[dict], path: str, result: dict) -> None:
+    rows = _visits_to_rows(visits)
+    top20 = sorted(
+        result["domain_stats"].items(),
+        key=lambda x: x[1]["count"], reverse=True
+    )[:20]
+    top_labels = json.dumps([d for d, _ in top20])
+    top_visits = json.dumps([s["count"] for _, s in top20])
+    top_times  = json.dumps([round(s["total_duration"] / 3_600_000_000, 2) for _, s in top20])
+
+    cat_labels = json.dumps(list(result["category_duration"].keys()))
+    cat_values = json.dumps([round(v / 3_600_000_000, 2) for v in result["category_duration"].values()])
+
+    hourly_labels = json.dumps(list(range(24)))
+    hourly_values = json.dumps([result["hourly"].get(h, 0) for h in range(24)])
+
+    score = productivity_score(result["category_duration"])
+    total_dur = sum(result["category_duration"].values())
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Browser History Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          background: #0d1117; color: #c9d1d9; padding: 24px; }}
+  h1 {{ font-size: 1.6rem; margin-bottom: 8px; color: #58a6ff; }}
+  .sub {{ color: #8b949e; font-size: .85rem; margin-bottom: 32px; }}
+  .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+           gap: 16px; margin-bottom: 32px; }}
+  .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }}
+  .card .val {{ font-size: 2rem; font-weight: 700; color: #58a6ff; }}
+  .card .lbl {{ font-size: .8rem; color: #8b949e; margin-top: 4px; }}
+  .score-{{"green" if score >= 70 else "yellow" if score >= 40 else "red"}} {{ color: {"#3fb950" if score >= 70 else "#d29922" if score >= 40 else "#f85149"} !important; }}
+  .charts {{ display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }}
+  .chart-box {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }}
+  .chart-box h2 {{ font-size: 1rem; margin-bottom: 16px; color: #8b949e; }}
+  canvas {{ max-height: 320px; }}
+  @media(max-width: 700px) {{ .charts {{ grid-template-columns: 1fr; }} }}
+  .footer {{ text-align: center; color: #8b949e; font-size: .75rem; margin-top: 32px; }}
+</style>
+</head>
+<body>
+<h1>Browser History Report</h1>
+<div class="sub">Generated {datetime.now().strftime("%Y-%m-%d %H:%M")} &nbsp;|&nbsp; {len(rows):,} visits</div>
+<div class="grid">
+  <div class="card"><div class="val">{len(rows):,}</div><div class="lbl">Total visits</div></div>
+  <div class="card"><div class="val">{len(set(r["domain"] for r in rows)):,}</div><div class="lbl">Unique domains</div></div>
+  <div class="card"><div class="val">{round(total_dur/3_600_000_000, 1)}h</div><div class="lbl">Total time</div></div>
+  <div class="card"><div class="val score-{("green" if score>=70 else "yellow" if score>=40 else "red")}">{score}</div><div class="lbl">Productivity score</div></div>
+</div>
+<div class="charts">
+  <div class="chart-box"><h2>Top 20 Sites — Visits</h2><canvas id="c1"></canvas></div>
+  <div class="chart-box"><h2>Top 20 Sites — Time (hours)</h2><canvas id="c2"></canvas></div>
+  <div class="chart-box"><h2>Hourly Pattern</h2><canvas id="c3"></canvas></div>
+  <div class="chart-box"><h2>Category Breakdown (hours)</h2><canvas id="c4"></canvas></div>
+</div>
+<div class="footer">browser-history-cli — data processed locally, never uploaded</div>
+<script>
+const cfg = (ctx, type, labels, data, label, color) => new Chart(ctx, {{
+  type, data: {{ labels, datasets: [{{ label, data, backgroundColor: color,
+    borderColor: color, borderWidth: type==='line'?2:0, fill: false }}] }},
+  options: {{ responsive: true, plugins: {{ legend: {{ display: false }} }},
+    scales: type!=='pie' ? {{ x: {{ ticks: {{ color:'#8b949e', font:{{size:10}} }}, grid:{{color:'#21262d'}} }},
+      y: {{ ticks: {{ color:'#8b949e' }}, grid:{{color:'#21262d'}} }} }} : {{}} }} }});
+cfg(document.getElementById('c1'),'bar',{top_labels},{top_visits},'Visits','#58a6ff');
+cfg(document.getElementById('c2'),'bar',{top_labels},{top_times},'Hours','#3fb950');
+cfg(document.getElementById('c3'),'bar',{hourly_labels},{hourly_values},'Visits','#d29922');
+cfg(document.getElementById('c4'),'pie',{cat_labels},{cat_values},'Hours',
+  ['#58a6ff','#3fb950','#f85149','#d29922','#a371f7','#39d353','#8b949e','#ffa657','#79c0ff','#56d364']);
+</script>
+</body></html>"""
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+    console.print(f"[green]HTML report → {path}[/green]")
+    console.print(f"[dim]Open with: open {path}[/dim]" if SYSTEM == "Darwin" else
+                  f"[dim]Open with: start {path}[/dim]" if SYSTEM == "Windows" else
+                  f"[dim]Open with: xdg-open {path}[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+def cmd_stats(args) -> None:
     available = find_available_browsers()
     if not available:
-        console.print("[red]설치된 브라우저를 찾을 수 없습니다.[/red]")
+        console.print("[red]No browsers found.[/red]"); return
+    available = filter_browsers(available, args.browser)
+    if not available:
         return
 
-    if args.browser:
-        available = [(k, n, t, p) for k, n, t, p in available if k == args.browser.lower()]
+    for bkey, bname, btype, bpath in available:
+        console.print(f"\n[bold blue]>>> {bname}[/bold blue]")
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as p:
+            t = p.add_task("Loading history…")
+            visits = load_history(bkey, btype, bpath, args.days)
+            p.update(t, completed=True)
 
-    all_visits = []
-    for browser_key, browser_name, db_type, db_path in available:
-        all_visits.extend(load_history(browser_key, db_type, db_path, args.days))
+        if not visits:
+            console.print("[yellow]  No history found.[/yellow]"); continue
 
+        result = analyze_visits(visits)
+        show_summary(visits, bname, result, args.days)
+        show_top_sites(result["domain_stats"], args.top, args.sort)
+        show_category_breakdown(result["category_duration"], result["category_count"])
+        show_hourly_heatmap(result["hourly"])
+        show_weekday_chart(result["weekday"])
+        show_calendar_heatmap(result["daily"])
+        show_daily_trend(result["daily"], n=min(14, args.days or 14))
+
+
+def cmd_top(args) -> None:
+    available = find_available_browsers()
+    if not available:
+        console.print("[red]No browsers found.[/red]"); return
+    available = filter_browsers(available, args.browser)
+    if not available:
+        return
+
+    all_visits: list[dict] = []
+    for bkey, bname, btype, bpath in available:
+        all_visits.extend(load_history(bkey, btype, bpath, args.days))
     if not all_visits:
-        console.print("[yellow]방문 기록이 없습니다.[/yellow]")
-        return
+        console.print("[yellow]No history found.[/yellow]"); return
 
-    period = f"최근 {args.days}일" if args.days else "전체"
-    label = args.browser or "전체 브라우저"
-    console.print(f"\n[bold magenta]{label} | {period}[/bold magenta]")
-    domain_stats, _, _, _ = analyze_visits(all_visits)
-    show_top_sites(domain_stats, limit=args.limit, sort_by=args.sort)
+    result = analyze_visits(all_visits)
+    period = f"last {args.days}d" if args.days else "all time"
+    console.print(f"\n[bold magenta]{args.browser or 'All browsers'}  |  {period}[/bold magenta]")
+    show_top_sites(result["domain_stats"], args.limit, args.sort)
 
 
-def cmd_list_browsers(args):
+def cmd_search(args) -> None:
     available = find_available_browsers()
     if not available:
-        console.print(f"[red]설치된 브라우저를 찾을 수 없습니다. (현재 OS: {SYSTEM})[/red]")
+        console.print("[red]No browsers found.[/red]"); return
+    available = filter_browsers(available, args.browser)
+    if not available:
         return
 
-    table = Table(title=f"감지된 브라우저 ({SYSTEM})", box=box.ROUNDED, header_style="bold cyan")
-    table.add_column("키", style="yellow")
-    table.add_column("브라우저", style="bold white")
-    table.add_column("타입", style="dim")
-    table.add_column("DB 경로", style="dim")
+    keyword = args.keyword
+    try:
+        pattern = re.compile(keyword, re.IGNORECASE) if args.regex else None
+    except re.error as e:
+        console.print(f"[red]Invalid regex: {e}[/red]"); return
+
+    all_visits: list[dict] = []
+    for bkey, bname, btype, bpath in available:
+        all_visits.extend(load_history(bkey, btype, bpath, args.days))
+
+    def matches(v: dict) -> bool:
+        url   = v.get("url", "")
+        title = v.get("title", "") or ""
+        fields = []
+        if args.field in ("url", "both"):   fields.append(url)
+        if args.field in ("title", "both"): fields.append(title)
+        if pattern:
+            return any(pattern.search(f) for f in fields)
+        kw = keyword.lower()
+        return any(kw in f.lower() for f in fields)
+
+    hits = [v for v in all_visits if not is_internal(v.get("url","")) and matches(v)]
+    hits = sorted(hits, key=lambda v: v.get("visit_time") or datetime.min, reverse=True)[:args.limit]
+
+    if not hits:
+        console.print(f"[yellow]No results for '{keyword}'.[/yellow]"); return
+
+    table = Table(title=f"Search: '{keyword}'  ({len(hits)} results)", box=box.ROUNDED, header_style="bold cyan")
+    table.add_column("Time",   style="blue",  width=16)
+    table.add_column("Domain", style="bold white", min_width=18)
+    table.add_column("Title",  style="white", min_width=28, max_width=48)
+    table.add_column("Dur",    justify="right", style="yellow")
+
+    for v in hits:
+        dt = v.get("visit_time")
+        title = (v.get("title") or "")[:48]
+        table.add_row(
+            dt.strftime("%Y-%m-%d %H:%M") if dt else "-",
+            get_domain(v.get("url", "")),
+            title,
+            duration_str(v.get("visit_duration", 0)),
+        )
+    console.print(table)
+
+
+def cmd_export(args) -> None:
+    available = find_available_browsers()
+    if not available:
+        console.print("[red]No browsers found.[/red]"); return
+    available = filter_browsers(available, args.browser)
+    if not available:
+        return
+
+    all_visits: list[dict] = []
+    for bkey, bname, btype, bpath in available:
+        all_visits.extend(load_history(bkey, btype, bpath, args.days))
+    if not all_visits:
+        console.print("[yellow]No history found.[/yellow]"); return
+
+    result = analyze_visits(all_visits)
+    fmt = args.format.lower()
+    out = args.output
+
+    if fmt == "csv":
+        export_csv(all_visits, out)
+    elif fmt == "json":
+        export_json(all_visits, out, result)
+    elif fmt == "html":
+        if not out:
+            out = "browser_history_report.html"
+        export_html(all_visits, out, result)
+    else:
+        console.print(f"[red]Unknown format: {fmt}[/red]")
+
+
+def cmd_category(args) -> None:
+    available = find_available_browsers()
+    if not available:
+        console.print("[red]No browsers found.[/red]"); return
+    available = filter_browsers(available, args.browser)
+    if not available:
+        return
+
+    all_visits: list[dict] = []
+    for bkey, bname, btype, bpath in available:
+        all_visits.extend(load_history(bkey, btype, bpath, args.days))
+    if not all_visits:
+        console.print("[yellow]No history found.[/yellow]"); return
+
+    result = analyze_visits(all_visits)
+    period = f"last {args.days}d" if args.days else "all time"
+    console.print(f"\n[bold magenta]{args.browser or 'All browsers'}  |  {period}[/bold magenta]")
+    show_category_breakdown(result["category_duration"], result["category_count"])
+
+    score = productivity_score(result["category_duration"])
+    col = _score_color(score)
+    console.print(f"\n  Productivity score: [{col}]{score}/100[/{col}]")
+
+    if args.detail:
+        for cat in sorted(result["category_duration"], key=lambda k: result["category_duration"][k], reverse=True):
+            label, color, _ = CATEGORY_META.get(cat, (cat, "dim", 1))
+            sites = [
+                (d, s) for d, s in result["domain_stats"].items()
+                if s.get("category") == cat
+            ]
+            if not sites:
+                continue
+            top = sorted(sites, key=lambda x: x[1]["count"], reverse=True)[:5]
+            console.print(f"\n  [{color}]{label}[/{color}]")
+            for domain, s in top:
+                console.print(f"    {domain:<30} {s['count']:>6} visits  {duration_str(s['total_duration']):>8}")
+
+
+def cmd_today(args) -> None:
+    args.days = 1
+    args.sort = "count"
+    args.top = 15
+    cmd_stats(args)
+
+
+def cmd_week(args) -> None:
+    args.days = 7
+    args.sort = "count"
+    args.top = 20
+    cmd_stats(args)
+
+
+def cmd_list_browsers(args) -> None:
+    available = find_available_browsers()
+    if not available:
+        console.print(f"[red]No browsers found on {SYSTEM}.[/red]"); return
+
+    table = Table(title=f"Detected browsers ({SYSTEM})", box=box.ROUNDED, header_style="bold cyan")
+    table.add_column("Key",     style="yellow")
+    table.add_column("Browser", style="bold white")
+    table.add_column("Type",    style="dim")
+    table.add_column("DB path", style="dim")
 
     for key, name, db_type, path in available:
         table.add_row(key, name, db_type, path)
 
     console.print(table)
-    console.print("\n사용법: [bold]browser-history stats --browser <키>[/bold]")
+    console.print("\n[dim]Usage: [bold]browser-history stats --browser <key>[/bold][/dim]")
 
 
-# --------------------------------------------------------------------------- #
-# 진입점
-# --------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="browser-history",
-        description="브라우저 방문 기록 분석 CLI (macOS / Windows / Linux)",
+        description="Browser History Analyzer — macOS / Windows / Linux",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-예시:
-  browser-history stats                      # 전체 통계
-  browser-history stats --days 7             # 최근 7일
-  browser-history stats --browser chrome     # Chrome만
-  browser-history top --sort duration        # 체류 시간순 Top 20
-  browser-history top --limit 30 --days 30   # 최근 30일 Top 30
-  browser-history browsers                   # 브라우저 목록
+Examples:
+  browser-history stats                        # full stats for all browsers
+  browser-history stats --browser chrome -d 7  # Chrome, last 7 days
+  browser-history today                        # quick look at today
+  browser-history week                         # this week's summary
+  browser-history top --sort duration -l 30    # top 30 by time spent
+  browser-history search "github" --days 30    # search history
+  browser-history category --detail --days 7   # category breakdown
+  browser-history export --format html -o report.html
+  browser-history export --format csv  -o history.csv
+  browser-history export --format json | jq .summary
+  browser-history browsers                     # list detected browsers
         """,
     )
-    subparsers = parser.add_subparsers(dest="command")
 
-    stats_p = subparsers.add_parser("stats", help="브라우저 방문 통계 분석")
-    stats_p.add_argument("--browser", "-b",
-                         help="특정 브라우저 (arc, chrome, brave, edge, vivaldi, opera, firefox, safari)")
-    stats_p.add_argument("--days", "-d", type=int, default=None, help="최근 N일 (기본: 전체)")
-    stats_p.add_argument("--top", "-t", type=int, default=20, help="상위 N개 사이트 (기본: 20)")
-    stats_p.add_argument("--sort", "-s", choices=["count", "duration"], default="count",
-                         help="정렬 기준: count(방문수) | duration(체류시간) (기본: count)")
+    sub = parser.add_subparsers(dest="command")
 
-    top_p = subparsers.add_parser("top", help="자주 방문한 사이트 순위")
-    top_p.add_argument("--browser", "-b", help="특정 브라우저만")
-    top_p.add_argument("--days", "-d", type=int, default=None, help="최근 N일 (기본: 전체)")
-    top_p.add_argument("--limit", "-l", type=int, default=20, help="표시할 수 (기본: 20)")
-    top_p.add_argument("--sort", "-s", choices=["count", "duration"], default="count",
-                       help="정렬 기준 (기본: count)")
+    # ---- stats ----
+    p = sub.add_parser("stats", help="Full statistics dashboard")
+    p.add_argument("--browser", "-b", metavar="BROWSER")
+    p.add_argument("--days", "-d", type=positive_int, default=None, metavar="N")
+    p.add_argument("--top",  "-t", type=positive_int, default=20,   metavar="N")
+    p.add_argument("--sort", "-s", choices=["count", "duration"], default="count")
 
-    subparsers.add_parser("browsers", help="감지된 브라우저 목록")
+    # ---- top ----
+    p = sub.add_parser("top", help="Top sites ranking")
+    p.add_argument("--browser", "-b", metavar="BROWSER")
+    p.add_argument("--days",  "-d", type=positive_int, default=None, metavar="N")
+    p.add_argument("--limit", "-l", type=positive_int, default=20,   metavar="N")
+    p.add_argument("--sort",  "-s", choices=["count", "duration"], default="count")
+
+    # ---- search ----
+    p = sub.add_parser("search", help="Search history by keyword")
+    p.add_argument("keyword")
+    p.add_argument("--browser", "-b", metavar="BROWSER")
+    p.add_argument("--days",  "-d", type=positive_int, default=None, metavar="N")
+    p.add_argument("--limit", "-l", type=positive_int, default=50,   metavar="N")
+    p.add_argument("--field", "-f", choices=["url", "title", "both"], default="both")
+    p.add_argument("--regex", "-r", action="store_true", help="Treat keyword as regex")
+
+    # ---- export ----
+    p = sub.add_parser("export", help="Export history to CSV / JSON / HTML")
+    p.add_argument("--format", "-f", choices=["csv", "json", "html"], default="csv")
+    p.add_argument("--output", "-o", metavar="FILE", default=None)
+    p.add_argument("--browser", "-b", metavar="BROWSER")
+    p.add_argument("--days",  "-d", type=positive_int, default=None, metavar="N")
+
+    # ---- category ----
+    p = sub.add_parser("category", help="Category & productivity analysis")
+    p.add_argument("--browser", "-b", metavar="BROWSER")
+    p.add_argument("--days",  "-d", type=positive_int, default=None, metavar="N")
+    p.add_argument("--detail", action="store_true", help="Show top sites per category")
+
+    # ---- today / week ----
+    for cmd_name in ("today", "week"):
+        p = sub.add_parser(cmd_name, help=f"Quick summary for {'today' if cmd_name=='today' else 'this week'}")
+        p.add_argument("--browser", "-b", metavar="BROWSER")
+
+    # ---- browsers ----
+    sub.add_parser("browsers", help="List detected browsers")
 
     args = parser.parse_args()
 
-    if args.command == "stats":
-        cmd_stats(args)
-    elif args.command == "top":
-        cmd_top(args)
-    elif args.command == "browsers":
-        cmd_list_browsers(args)
+    dispatch = {
+        "stats":    cmd_stats,
+        "top":      cmd_top,
+        "search":   cmd_search,
+        "export":   cmd_export,
+        "category": cmd_category,
+        "today":    cmd_today,
+        "week":     cmd_week,
+        "browsers": cmd_list_browsers,
+    }
+
+    if args.command in dispatch:
+        dispatch[args.command](args)
     else:
+        # Default: stats for all browsers
         args.browser = None
-        args.days = None
-        args.top = 20
-        args.sort = "count"
+        args.days    = None
+        args.top     = 20
+        args.sort    = "count"
         cmd_stats(args)
 
 

@@ -1,152 +1,168 @@
-# 브라우저 방문 기록 분석 CLI
+# Browser History Analyzer CLI
 
-터미널에서 브라우저 방문 기록을 분석해 자주 찾는 사이트, 체류 시간, 시간대별 패턴 등을 보여주는 CLI 도구입니다.
+Analyze your browser history from the terminal — top sites, time spent, productivity score, category breakdown, and beautiful visualizations.
 
-**macOS / Windows / Linux** 에서 동작합니다.
-
----
-
-## 목적
-
-브라우저를 얼마나, 어떻게 사용하고 있는지 수치로 파악하기 위해 만들었습니다.
-
-- 하루 중 언제 가장 많이 탐색하는지
-- 어떤 사이트에 실제로 시간을 많이 쏟는지
-- 방문 횟수와 실제 체류 시간이 얼마나 다른지
-
-를 한눈에 볼 수 있습니다.
+**Platforms**: macOS · Windows · Linux
+**Browsers**: Chrome · Firefox · Arc · Brave · Edge · Vivaldi · Opera · Safari
 
 ---
 
-## 지원 브라우저
+## Features
 
-| 브라우저 | macOS | Windows | Linux |
-|---|---|---|---|
-| Chrome  | ✅ | ✅ | ✅ |
-| Firefox | ✅ | ✅ | ✅ |
-| Brave   | ✅ | ✅ | ✅ |
-| Edge    | ✅ | ✅ | ✅ |
-| Vivaldi | ✅ | ✅ | ✅ |
-| Opera   | ✅ | ✅ | ✅ |
-| Arc     | ✅ | ✅ | ❌ |
-| Safari  | ⚠️ | ❌ | ❌ |
-
-설치된 브라우저는 자동으로 감지됩니다.
-
-> Safari는 macOS 전용이며, 터미널에 **전체 디스크 접근** 권한이 필요합니다.
+- **Top sites** — ranked by visit count or time spent
+- **Category breakdown** — Social / Dev / AI Tools / Video / Work / Shopping / …
+- **Productivity score** — 0–100 score based on how you actually spend your time
+- **Hourly heatmap** — see when you browse the most
+- **GitHub-style activity calendar** — 24-week contribution graph in your terminal
+- **`search`** — find any URL or page title in your history
+- **`export`** — CSV, JSON, or interactive HTML report (Chart.js, no server needed)
+- **`today` / `week`** — instant daily or weekly digest
+- Reads all installed browsers simultaneously; no configuration needed
+- Data stays **100% local** — nothing is uploaded or transmitted
+- Browser can stay open — reads a safe temp copy of the DB
 
 ---
 
-## 설치
+## Supported Browsers
 
-**요구사항**: Python 3.9 이상
+| Browser  | macOS | Windows | Linux |
+|----------|-------|---------|-------|
+| Chrome   | ✅    | ✅      | ✅    |
+| Firefox  | ✅    | ✅      | ✅    |
+| Brave    | ✅    | ✅      | ✅    |
+| Edge     | ✅    | ✅      | ✅    |
+| Vivaldi  | ✅    | ✅      | ✅    |
+| Opera    | ✅    | ✅      | ✅    |
+| Arc      | ✅    | ✅      | ❌    |
+| Safari   | ⚠️   | ❌      | ❌    |
 
-### 1. 프로젝트 클론
+> **Safari** requires Full Disk Access for your terminal app.
+> System Settings → Privacy & Security → Full Disk Access → add Terminal / iTerm2.
+
+---
+
+## Installation
+
+**Requirements**: Python 3.9+
 
 ```bash
+# 1. Clone
 git clone <repo-url>
-cd "웹탐색 cli"
-```
+cd browser-history-cli
 
-### 2. 가상환경 생성 및 활성화
-
-```bash
-# macOS / Linux
+# 2. Create virtual environment
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate        # macOS / Linux
+# venv\Scripts\activate         # Windows
 
-# Windows
-python -m venv venv
-venv\Scripts\activate
-```
-
-### 3. 패키지 설치
-
-```bash
+# 3. Install
 pip install -e .
 ```
 
-이후부터는 어디서든 `browser-history` 명령을 사용할 수 있습니다.
-
-> 새 터미널 세션을 열면 `source venv/bin/activate` (Windows: `venv\Scripts\activate`)로 가상환경을 다시 활성화하세요.
+After this, `browser-history` is available as a global command inside the venv.
 
 ---
 
-## 실행 방법
+## Usage
 
-```bash
-browser-history <명령> [옵션]
+```
+browser-history <command> [options]
 ```
 
-### 명령 목록
+### Commands
 
-| 명령 | 설명 |
-|---|---|
-| `stats` | 통계 대시보드 (기본값) |
-| `top` | 자주 방문한 사이트 순위 |
-| `browsers` | 감지된 브라우저 목록 확인 |
+| Command    | Description                                    |
+|------------|------------------------------------------------|
+| `stats`    | Full statistics dashboard (default)            |
+| `top`      | Top sites ranking                              |
+| `search`   | Search history by keyword or regex             |
+| `export`   | Export to CSV / JSON / HTML                    |
+| `category` | Category & productivity analysis               |
+| `today`    | Quick summary of today's browsing              |
+| `week`     | Quick summary of this week                     |
+| `browsers` | List all detected browsers                     |
 
-### 옵션
+### Common options
 
-| 옵션 | 설명 | 기본값 |
-|---|---|---|
-| `--browser`, `-b` | 특정 브라우저만 분석 (`chrome`, `firefox`, `brave` 등) | 전체 |
-| `--days`, `-d` | 최근 N일만 분석 | 전체 기간 |
-| `--top`, `-t` | 표시할 사이트 수 | 20 |
-| `--sort`, `-s` | 정렬 기준 (`count` \| `duration`) | `count` |
-| `--limit`, `-l` | `top` 명령에서 표시할 수 | 20 |
+| Option              | Description                                          | Default    |
+|---------------------|------------------------------------------------------|------------|
+| `--browser`, `-b`   | Specific browser (`chrome`, `firefox`, `arc`, …)     | all        |
+| `--days`, `-d`      | Limit to last N days                                 | all time   |
+| `--top`, `-t`       | Number of sites to show                              | 20         |
+| `--sort`, `-s`      | Sort by `count` or `duration`                        | `count`    |
 
 ---
 
-## 예시
+## Examples
 
 ```bash
-# 전체 기간 통계
+# Full stats across all browsers
 browser-history stats
 
-# Chrome 브라우저, 최근 7일
+# Chrome only, last 7 days
 browser-history stats --browser chrome --days 7
 
-# 체류 시간 기준 Top 30
+# Quick daily / weekly digest
+browser-history today
+browser-history week
+
+# Top 30 sites sorted by time spent
 browser-history top --sort duration --limit 30
 
-# 최근 30일, 방문 횟수 기준 순위
-browser-history top --days 30
+# Search history (supports --regex)
+browser-history search "github"
+browser-history search "python tutorial" --days 30
+browser-history search "react|vue|svelte" --regex
 
-# 감지된 브라우저 확인
+# Category & productivity analysis
+browser-history category
+browser-history category --detail --days 7
+
+# Export
+browser-history export --format html -o report.html   # interactive charts
+browser-history export --format csv  -o history.csv
+browser-history export --format json | jq .summary
+
+# List detected browsers
 browser-history browsers
 ```
 
 ---
 
-## 출력 내용
+## Output Overview
 
-**요약 카드**
-- 총 방문 수, 고유 도메인 수, 총 체류 시간, 분석 기간
+**Stats dashboard** includes:
+- Summary card (visits · unique domains · total time · **productivity score**)
+- Top sites table with category labels
+- Category breakdown bar chart
+- Hourly activity heatmap
+- Day-of-week distribution
+- **24-week GitHub-style activity calendar**
+- 14-day daily trend
 
-**Top 사이트 표**
-- 도메인별 방문 횟수, 총 체류 시간, 마지막 방문 일시
-
-**시간대 히트맵**
-- 0~23시 블록 차트로 언제 가장 많이 탐색하는지 표시
-
-**요일별 막대 차트**
-- 주중/주말 구분, 요일별 방문 빈도
-
-**일별 추이**
-- 최근 14일간 방문량 변화
-
----
-
-## Safari 권한 설정 (macOS)
-
-Safari 데이터를 읽으려면 터미널에 전체 디스크 접근 권한이 필요합니다.
-
-**시스템 설정 > 개인 정보 보호 및 보안 > 전체 디스크 접근** 에서 사용 중인 터미널 앱을 추가하세요.
+**HTML export** generates a self-contained file with interactive Chart.js charts:
+- Top 20 sites by visits and time
+- Hourly pattern
+- Category pie chart
 
 ---
 
-## 주의 사항
+## Categories
 
-- 브라우저 실행 중에도 분석 가능합니다. 원본 DB를 직접 수정하지 않고 임시 복사본을 읽습니다.
-- 방문 기록은 로컬에서만 처리되며 외부로 전송되지 않습니다.
+Domains are automatically classified into:
+
+`AI Tools` · `Development` · `Work` · `Education` · `Social Media` · `Video` · `Entertainment` · `Gaming` · `News` · `Finance` · `Shopping` · `Maps` · `Search` · `Reference` · `Other`
+
+---
+
+## Privacy
+
+- All processing happens locally on your machine.
+- The tool copies the browser DB to a secure temporary file (`tempfile.mkstemp`) and deletes it immediately after reading.
+- No data is sent to any server.
+
+---
+
+## License
+
+MIT
