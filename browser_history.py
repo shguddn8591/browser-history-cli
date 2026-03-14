@@ -1142,6 +1142,352 @@ def cmd_list_browsers(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Insights
+# ---------------------------------------------------------------------------
+
+def generate_insights(visits: list[dict], result: dict) -> list[str]:
+    """Derive human-readable behavioral observations from visit data."""
+    insights: list[str] = []
+    domain_stats = result["domain_stats"]
+    hourly       = result["hourly"]
+    daily        = result["daily"]
+    weekday      = result["weekday"]
+    cat_dur      = result["category_duration"]
+
+    if not visits or not domain_stats:
+        return ["Not enough data — try running without [bold]--days[/bold] to include all history."]
+
+    # Top site
+    top_dom, top_s = max(domain_stats.items(), key=lambda x: x[1]["count"])
+    cat_label = CATEGORY_META.get(top_s.get("category", "other"), ("Other", "dim", 1))[0]
+    insights.append(
+        f"[dim]→[/dim] Most visited: [bold cyan]{top_dom}[/bold cyan]"
+        f"  ({top_s['count']:,} visits · {cat_label})"
+    )
+
+    # Peak hour
+    if hourly:
+        ph, pc = max(hourly.items(), key=lambda x: x[1])
+        ampm = f"{ph % 12 or 12}{'am' if ph < 12 else 'pm'}"
+        insights.append(f"[dim]→[/dim] Peak browsing hour: [bold cyan]{ampm}[/bold cyan]  ({pc:,} visits)")
+
+    # Most active period of day
+    if hourly:
+        periods = {
+            "morning (6–12)":   sum(hourly.get(h, 0) for h in range(6, 12)),
+            "afternoon (12–18)": sum(hourly.get(h, 0) for h in range(12, 18)),
+            "evening (18–22)":  sum(hourly.get(h, 0) for h in range(18, 22)),
+            "night (22–6)":     sum(hourly.get(h, 0) for h in list(range(22, 24)) + list(range(0, 6))),
+        }
+        peak_period = max(periods.items(), key=lambda x: x[1])
+        insights.append(f"[dim]→[/dim] Most active period: [bold]{peak_period[0]}[/bold]  ({peak_period[1]:,} visits)")
+
+    # Weekend vs weekday
+    wd_avg = sum(weekday.get(d, 0) for d in range(5)) / 5 if weekday else 0
+    we_avg = sum(weekday.get(d, 0) for d in range(5, 7)) / 2 if weekday else 0
+    if wd_avg > 0 and we_avg > 0:
+        ratio = we_avg / wd_avg
+        if ratio > 1.3:
+            insights.append(f"[dim]→[/dim] You browse [bold]{ratio:.1f}×[/bold] more on weekends than weekdays")
+        elif ratio < 0.7:
+            insights.append(
+                f"[dim]→[/dim] Focused weekday browser — [bold]{wd_avg/we_avg:.1f}×[/bold] more active than weekends"
+            )
+
+    # Biggest leisure sink
+    leisure = {k: v for k, v in cat_dur.items() if CATEGORY_META.get(k, ("", "", 1))[2] == 0}
+    if leisure:
+        lk, lv = max(leisure.items(), key=lambda x: x[1])
+        insights.append(
+            f"[dim]→[/dim] Biggest leisure sink: [bold]{CATEGORY_META.get(lk, ('Other','dim',1))[0]}[/bold]"
+            f"  ({duration_str(lv)} spent)"
+        )
+
+    # Busiest day
+    if daily:
+        bd, bc = max(daily.items(), key=lambda x: x[1])
+        try:
+            dt = datetime.strptime(bd, "%Y-%m-%d")
+            insights.append(
+                f"[dim]→[/dim] Busiest day: [bold cyan]{bd} ({DAYS_KO[dt.weekday()]})[/bold cyan]"
+                f"  — {bc:,} visits"
+            )
+        except Exception:
+            pass
+
+    # Daily average + consecutive streak
+    if daily:
+        active_days = len(daily)
+        avg = sum(daily.values()) / active_days
+        insights.append(
+            f"[dim]→[/dim] Daily average: [bold]{avg:.0f}[/bold] visits across {active_days} active days"
+        )
+        streak = 0
+        d = datetime.now().date()
+        while d.strftime("%Y-%m-%d") in daily:
+            streak += 1
+            d -= timedelta(days=1)
+        if streak > 1:
+            insights.append(f"[dim]→[/dim] Active streak: [bold green]{streak} consecutive days[/bold green]")
+
+    # Morning routine (6–10am top domains)
+    morning = [
+        v for v in visits
+        if v.get("visit_time") and 6 <= v["visit_time"].hour <= 10
+        and not is_internal(v.get("url", ""))
+    ]
+    if len(morning) >= 5:
+        mc: dict[str, int] = defaultdict(int)
+        for v in morning:
+            mc[get_domain(v["url"])] += 1
+        top_m = sorted(mc.items(), key=lambda x: x[1], reverse=True)[:3]
+        routine = " → ".join(d for d, _ in top_m)
+        insights.append(f"[dim]→[/dim] Morning routine (6–10am): [bold]{routine}[/bold]")
+
+    # Unique domains
+    insights.append(f"[dim]→[/dim] Explored [bold]{len(domain_stats):,}[/bold] unique domains")
+
+    # Productivity interpretation
+    score = productivity_score(cat_dur)
+    if score >= 70:
+        insights.append(f"[dim]→[/dim] Productivity: [bold green]{score}/100[/bold green]  — impressive focus")
+    elif score >= 40:
+        insights.append(f"[dim]→[/dim] Productivity: [bold yellow]{score}/100[/bold yellow]  — balanced browsing")
+    else:
+        insights.append(f"[dim]→[/dim] Productivity: [bold red]{score}/100[/bold red]  — heavy leisure time")
+
+    return insights
+
+
+def cmd_insights(args) -> None:
+    available = find_available_browsers()
+    if not available:
+        console.print("[red]No browsers found.[/red]"); return
+    available = filter_browsers(available, args.browser)
+    if not available:
+        return
+
+    all_visits: list[dict] = []
+    for bkey, bname, btype, bpath in available:
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as p:
+            t = p.add_task(f"Loading {bname}…")
+            all_visits.extend(load_history(bkey, btype, bpath, args.days))
+            p.update(t, completed=True)
+
+    if not all_visits:
+        console.print("[yellow]No history found.[/yellow]"); return
+
+    result = analyze_visits(all_visits)
+    period = f"last {args.days}d" if args.days else "all time"
+    lines  = generate_insights(all_visits, result)
+
+    console.print(Panel(
+        "\n".join(lines),
+        title=f"[bold magenta]Insights — {args.browser or 'All browsers'} · {period}[/bold magenta]",
+        border_style="magenta",
+        padding=(1, 2),
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Compare command
+# ---------------------------------------------------------------------------
+
+def _pct_delta(a: float, b: float) -> str:
+    if a == 0:
+        return "[dim]n/a[/dim]"
+    pct = (b - a) / a * 100
+    sign = "+" if pct >= 0 else ""
+    color = "green" if pct >= 0 else "red"
+    return f"[{color}]{sign}{pct:.0f}%[/{color}]"
+
+
+def cmd_compare(args) -> None:
+    """Compare two consecutive time periods side-by-side."""
+    period_map = {"week": (7, "week"), "month": (30, "month")}
+    period_days, period_label = period_map[args.period]
+
+    available = find_available_browsers()
+    if not available:
+        console.print("[red]No browsers found.[/red]"); return
+    available = filter_browsers(available, args.browser)
+    if not available:
+        return
+
+    now     = datetime.now()
+    end_b   = now
+    start_b = now - timedelta(days=period_days)
+    end_a   = start_b
+    start_a = end_a - timedelta(days=period_days)
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), transient=True) as p:
+        t = p.add_task("Loading history for both periods…")
+        all_visits: list[dict] = []
+        for bkey, bname, btype, bpath in available:
+            all_visits.extend(load_history(bkey, btype, bpath, period_days * 2))
+        p.update(t, completed=True)
+
+    def _slice(start: datetime, end: datetime) -> list[dict]:
+        return [v for v in all_visits if v.get("visit_time") and start <= v["visit_time"] <= end]
+
+    visits_a = _slice(start_a, end_a)
+    visits_b = _slice(start_b, end_b)
+
+    if not visits_a and not visits_b:
+        console.print("[yellow]Not enough history to compare.[/yellow]"); return
+
+    res_a = analyze_visits(visits_a)
+    res_b = analyze_visits(visits_b)
+
+    score_a  = productivity_score(res_a["category_duration"])
+    score_b  = productivity_score(res_b["category_duration"])
+    unique_a = len(res_a["domain_stats"])
+    unique_b = len(res_b["domain_stats"])
+    total_a  = len(visits_a)
+    total_b  = len(visits_b)
+    dur_a    = sum(v.get("visit_duration", 0) or 0 for v in visits_a)
+    dur_b    = sum(v.get("visit_duration", 0) or 0 for v in visits_b)
+    top_a    = max(res_a["domain_stats"], key=lambda d: res_a["domain_stats"][d]["count"]) if res_a["domain_stats"] else "—"
+    top_b    = max(res_b["domain_stats"], key=lambda d: res_b["domain_stats"][d]["count"]) if res_b["domain_stats"] else "—"
+
+    label_a = f"Last {period_label}"
+    label_b = f"This {period_label}"
+
+    table = Table(
+        title=f"[bold]{label_a}[/bold] vs [bold]{label_b}[/bold]",
+        box=box.ROUNDED, header_style="bold cyan",
+    )
+    table.add_column("Metric",       style="dim",        min_width=18)
+    table.add_column(label_a,        style="white",      justify="right", min_width=14)
+    table.add_column(label_b,        style="bold white", justify="right", min_width=14)
+    table.add_column("Change",       justify="right",    min_width=8)
+
+    table.add_row("Total visits",   f"{total_a:,}",      f"{total_b:,}",       _pct_delta(total_a,  total_b))
+    table.add_row("Unique domains", f"{unique_a:,}",     f"{unique_b:,}",      _pct_delta(unique_a, unique_b))
+    table.add_row("Total time",     duration_str(dur_a), duration_str(dur_b),  _pct_delta(dur_a,    dur_b))
+    table.add_row("Productivity",   f"{score_a}/100",    f"{score_b}/100",     _pct_delta(score_a,  score_b))
+    table.add_row("Top site",       top_a,               top_b,                "")
+
+    console.print(table)
+
+    doms_a = set(res_a["domain_stats"])
+    doms_b = set(res_b["domain_stats"])
+    new_doms  = sorted(doms_b - doms_a, key=lambda d: res_b["domain_stats"][d]["count"], reverse=True)[:5]
+    lost_doms = sorted(doms_a - doms_b, key=lambda d: res_a["domain_stats"][d]["count"], reverse=True)[:5]
+
+    if new_doms:
+        console.print(f"\n[green]New this {period_label}:[/green]  " + "  ".join(f"[bold]{d}[/bold]" for d in new_doms))
+    if lost_doms:
+        console.print(f"[dim]No longer visited:[/dim]  " + "  ".join(lost_doms))
+
+    common = doms_a & doms_b
+    if common:
+        movers = [
+            (d, res_a["domain_stats"][d]["count"], res_b["domain_stats"][d]["count"],
+             (res_b["domain_stats"][d]["count"] - res_a["domain_stats"][d]["count"]) / max(res_a["domain_stats"][d]["count"], 1))
+            for d in common
+        ]
+        gainers = sorted([(d, ca, cb, p) for d, ca, cb, p in movers if p >= 0.25],  key=lambda x: x[3], reverse=True)[:3]
+        losers  = sorted([(d, ca, cb, p) for d, ca, cb, p in movers if p <= -0.25], key=lambda x: x[3])[:3]
+
+        if gainers:
+            console.print(f"\n[green]Biggest increases:[/green]")
+            for d, ca, cb, pct in gainers:
+                console.print(f"  [bold]{d:<32}[/bold] {ca:>5} → {cb:>5}  [green]+{pct*100:.0f}%[/green]")
+        if losers:
+            console.print(f"\n[red]Biggest decreases:[/red]")
+            for d, ca, cb, pct in losers:
+                console.print(f"  [bold]{d:<32}[/bold] {ca:>5} → {cb:>5}  [red]{pct*100:.0f}%[/red]")
+
+
+# ---------------------------------------------------------------------------
+# Timeline command
+# ---------------------------------------------------------------------------
+
+def show_timeline(visits: list[dict], target_date) -> None:
+    """Render an hour-by-hour browsing activity chart for a given date."""
+    day_visits = [
+        v for v in visits
+        if v.get("visit_time") and v["visit_time"].date() == target_date
+        and not is_internal(v.get("url", ""))
+    ]
+
+    date_str = target_date.strftime("%Y-%m-%d")
+    if not day_visits:
+        console.print(f"[yellow]No activity found for {date_str}.[/yellow]"); return
+
+    by_hour: dict[int, list] = defaultdict(list)
+    for v in day_visits:
+        by_hour[v["visit_time"].hour].append(v)
+
+    mx    = max(len(vv) for vv in by_hour.values())
+    total = len(day_visits)
+
+    try:
+        dt      = datetime.strptime(date_str, "%Y-%m-%d")
+        day_lbl = f"({DAYS_KO[dt.weekday()]})"
+    except Exception:
+        day_lbl = ""
+
+    console.print(f"\n[bold cyan]Activity Timeline — {date_str} {day_lbl}[/bold cyan]  [dim]{total:,} visits[/dim]")
+
+    for h in range(24):
+        vv = by_hour.get(h, [])
+        n  = len(vv)
+
+        if n == 0:
+            console.print(f"  [dim]{h:02d}:00   ·[/dim]")
+            continue
+
+        bar_len = max(1, int((n / mx) * 24))
+        if   6  <= h < 9:  color = "cyan"
+        elif 9  <= h < 12: color = "green"
+        elif 12 <= h < 14: color = "yellow"
+        elif 14 <= h < 18: color = "green"
+        elif 18 <= h < 22: color = "blue"
+        else:              color = "magenta"
+
+        bar = f"[{color}]{'█' * bar_len}[/{color}]"
+
+        dc: dict[str, int] = defaultdict(int)
+        for v in vv:
+            dc[get_domain(v.get("url", ""))] += 1
+        top_d = sorted(dc.items(), key=lambda x: x[1], reverse=True)[:4]
+        doms  = "  ".join(
+            f"[dim]{d}[/dim][bright_black]×{c}[/bright_black]" if c > 1 else f"[dim]{d}[/dim]"
+            for d, c in top_d
+        )
+        console.print(f"  [bold]{h:02d}:00[/bold]  [dim]{n:3}[/dim]  {bar:<26}  {doms}")
+
+
+def cmd_timeline(args) -> None:
+    available = find_available_browsers()
+    if not available:
+        console.print("[red]No browsers found.[/red]"); return
+    available = filter_browsers(available, args.browser)
+    if not available:
+        return
+
+    if args.date:
+        try:
+            target = datetime.strptime(args.date, "%Y-%m-%d").date()
+        except ValueError:
+            console.print("[red]Invalid date — use YYYY-MM-DD format.[/red]"); return
+        days_back = (datetime.now().date() - target).days + 1
+        if days_back < 1:
+            console.print("[red]Date cannot be in the future.[/red]"); return
+    else:
+        target    = datetime.now().date()
+        days_back = 1
+
+    all_visits: list[dict] = []
+    for bkey, bname, btype, bpath in available:
+        all_visits.extend(load_history(bkey, btype, bpath, days_back))
+
+    show_timeline(all_visits, target)
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -1156,6 +1502,12 @@ Examples:
   browser-history stats --browser chrome -d 7  # Chrome, last 7 days
   browser-history today                        # quick look at today
   browser-history week                         # this week's summary
+  browser-history insights                     # smart behavioral insights (last 30d)
+  browser-history insights --days 7            # insights for the last 7 days
+  browser-history compare                      # this week vs last week
+  browser-history compare --period month       # this month vs last month
+  browser-history timeline                     # hour-by-hour view of today
+  browser-history timeline --date 2024-03-10   # activity for a specific day
   browser-history top --sort duration -l 30    # top 30 by time spent
   browser-history search "github" --days 30    # search history
   browser-history category --detail --days 7   # category breakdown
@@ -1212,6 +1564,24 @@ Examples:
     # ---- browsers ----
     sub.add_parser("browsers", help="List detected browsers")
 
+    # ---- insights ----
+    p = sub.add_parser("insights", help="Smart behavioral insights from your browsing history")
+    p.add_argument("--browser", "-b", metavar="BROWSER")
+    p.add_argument("--days", "-d", type=positive_int, default=30, metavar="N",
+                   help="Days to analyze (default: 30)")
+
+    # ---- compare ----
+    p = sub.add_parser("compare", help="Compare this period vs last period")
+    p.add_argument("--browser", "-b", metavar="BROWSER")
+    p.add_argument("--period", choices=["week", "month"], default="week",
+                   help="Comparison window: week (7d) or month (30d) (default: week)")
+
+    # ---- timeline ----
+    p = sub.add_parser("timeline", help="Hour-by-hour activity for a specific day")
+    p.add_argument("--browser", "-b", metavar="BROWSER")
+    p.add_argument("--date", "-d", metavar="YYYY-MM-DD", default=None,
+                   help="Date to display (default: today)")
+
     args = parser.parse_args()
 
     dispatch = {
@@ -1223,6 +1593,9 @@ Examples:
         "today":    cmd_today,
         "week":     cmd_week,
         "browsers": cmd_list_browsers,
+        "insights": cmd_insights,
+        "compare":  cmd_compare,
+        "timeline": cmd_timeline,
     }
 
     if args.command in dispatch:

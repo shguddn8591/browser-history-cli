@@ -4,15 +4,42 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "browser-history-cli"
-version = "1.0.0"
-description = "브라우저 방문 기록 분석 CLI"
+version = "1.1.0"
+description = "Analyze your browser history from the terminal — insights, comparisons, and beautiful visualizations across all major browsers"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.9"
+keywords = [
+    "browser", "history", "cli", "productivity", "analytics",
+    "chrome", "firefox", "safari", "arc", "brave", "terminal"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
 dependencies = [
     "rich>=13.0.0",
 ]
 
 [project.scripts]
 browser-history = "browser_history:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/browser-history-cli"
+Issues = "https://github.com/yourusername/browser-history-cli/issues"
 
 [tool.setuptools]
 py-modules = ["browser_history"]

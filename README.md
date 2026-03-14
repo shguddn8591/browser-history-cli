@@ -1,165 +1,232 @@
-# Browser History Analyzer CLI
+# browser-history-cli
 
-Analyze your browser history from the terminal — top sites, time spent, productivity score, category breakdown, and beautiful visualizations.
+**Turn your browser history into actionable insights — right in your terminal.**
 
-**Platforms**: macOS · Windows · Linux
-**Browsers**: Chrome · Firefox · Arc · Brave · Edge · Vivaldi · Opera · Safari
+```
+pip install browser-history-cli
+browser-history insights
+```
+
+No accounts. No cloud. Your data never leaves your machine.
+
+---
+
+## What it does
+
+`browser-history-cli` reads the SQLite databases your browsers already store locally and gives you a clear picture of how you actually spend your time online — across every browser, on any OS.
+
+```
+╭─────────────────── Insights — All browsers · last 30d ───────────────────╮
+│                                                                           │
+│  → Most visited: github.com  (1,842 visits · Development)                │
+│  → Peak browsing hour: 10am  (312 visits)                                 │
+│  → Most active period: morning (6–12)  (2,341 visits)                    │
+│  → You browse 1.8× more on weekends than weekdays                        │
+│  → Biggest leisure sink: Video  (4h 23m spent)                           │
+│  → Busiest day: 2024-03-11 (Mon)  — 487 visits                           │
+│  → Daily average: 156 visits across 28 active days                       │
+│  → Active streak: 12 consecutive days                                     │
+│  → Morning routine (6–10am): github.com → chatgpt.com → notion.so        │
+│  → Explored 634 unique domains                                            │
+│  → Productivity: 71/100  — impressive focus                               │
+│                                                                           │
+╰───────────────────────────────────────────────────────────────────────────╯
+```
 
 ---
 
 ## Features
 
-- **Top sites** — ranked by visit count or time spent
-- **Category breakdown** — Social / Dev / AI Tools / Video / Work / Shopping / …
-- **Productivity score** — 0–100 score based on how you actually spend your time
-- **Hourly heatmap** — see when you browse the most
-- **GitHub-style activity calendar** — 24-week contribution graph in your terminal
-- **`search`** — find any URL or page title in your history
-- **`export`** — CSV, JSON, or interactive HTML report (Chart.js, no server needed)
-- **`today` / `week`** — instant daily or weekly digest
-- Reads all installed browsers simultaneously; no configuration needed
-- Data stays **100% local** — nothing is uploaded or transmitted
-- Browser can stay open — reads a safe temp copy of the DB
-
----
-
-## Supported Browsers
-
-| Browser  | macOS | Windows | Linux |
-|----------|-------|---------|-------|
-| Chrome   | ✅    | ✅      | ✅    |
-| Firefox  | ✅    | ✅      | ✅    |
-| Brave    | ✅    | ✅      | ✅    |
-| Edge     | ✅    | ✅      | ✅    |
-| Vivaldi  | ✅    | ✅      | ✅    |
-| Opera    | ✅    | ✅      | ✅    |
-| Arc      | ✅    | ✅      | ❌    |
-| Safari   | ⚠️   | ❌      | ❌    |
-
-> **Safari** requires Full Disk Access for your terminal app.
-> System Settings → Privacy & Security → Full Disk Access → add Terminal / iTerm2.
+| Command | Description |
+|---------|-------------|
+| `stats` | Full dashboard: top sites, categories, heatmaps, trend charts |
+| `insights` | Smart behavioral observations from your browsing patterns |
+| `compare` | Side-by-side comparison of this week vs last week (or month) |
+| `timeline` | Hour-by-hour activity view for any day |
+| `today` | Quick summary of today's browsing |
+| `week` | This week's summary |
+| `top` | Top domains ranked by visits or time spent |
+| `category` | Category & productivity breakdown |
+| `search` | Full-text search across URLs and page titles |
+| `export` | Export to CSV, JSON, or a standalone HTML report |
+| `browsers` | List all detected browsers on your system |
 
 ---
 
 ## Installation
 
-**Requirements**: Python 3.9+
-
 ```bash
-# 1. Clone
-git clone <repo-url>
-cd browser-history-cli
+# Recommended — isolated install
+pipx install browser-history-cli
 
-# 2. Create virtual environment
-python3 -m venv venv
-source venv/bin/activate        # macOS / Linux
-# venv\Scripts\activate         # Windows
-
-# 3. Install
-pip install -e .
+# Or with pip
+pip install browser-history-cli
 ```
 
-After this, `browser-history` is available as a global command inside the venv.
+**Requirements:** Python 3.9+ · [`rich`](https://github.com/Textualize/rich)
 
 ---
 
-## Usage
-
-```
-browser-history <command> [options]
-```
-
-### Commands
-
-| Command    | Description                                    |
-|------------|------------------------------------------------|
-| `stats`    | Full statistics dashboard (default)            |
-| `top`      | Top sites ranking                              |
-| `search`   | Search history by keyword or regex             |
-| `export`   | Export to CSV / JSON / HTML                    |
-| `category` | Category & productivity analysis               |
-| `today`    | Quick summary of today's browsing              |
-| `week`     | Quick summary of this week                     |
-| `browsers` | List all detected browsers                     |
-
-### Common options
-
-| Option              | Description                                          | Default    |
-|---------------------|------------------------------------------------------|------------|
-| `--browser`, `-b`   | Specific browser (`chrome`, `firefox`, `arc`, …)     | all        |
-| `--days`, `-d`      | Limit to last N days                                 | all time   |
-| `--top`, `-t`       | Number of sites to show                              | 20         |
-| `--sort`, `-s`      | Sort by `count` or `duration`                        | `count`    |
-
----
-
-## Examples
+## Quick start
 
 ```bash
-# Full stats across all browsers
+# See everything about your browsing habits
 browser-history stats
 
-# Chrome only, last 7 days
-browser-history stats --browser chrome --days 7
+# Smart insights in one panel
+browser-history insights
 
-# Quick daily / weekly digest
-browser-history today
-browser-history week
+# How did this week compare to last week?
+browser-history compare
 
-# Top 30 sites sorted by time spent
-browser-history top --sort duration --limit 30
+# What did I do all day?
+browser-history timeline
 
-# Search history (supports --regex)
-browser-history search "github"
-browser-history search "python tutorial" --days 30
-browser-history search "react|vue|svelte" --regex
+# Specific date
+browser-history timeline --date 2024-03-10
 
-# Category & productivity analysis
-browser-history category
-browser-history category --detail --days 7
+# Last 7 days, one browser only
+browser-history stats --browser arc --days 7
 
-# Export
-browser-history export --format html -o report.html   # interactive charts
-browser-history export --format csv  -o history.csv
-browser-history export --format json | jq .summary
+# Top 20 sites by time spent
+browser-history top --sort duration
 
-# List detected browsers
-browser-history browsers
+# Where does my social media time go?
+browser-history category --detail
+
+# Search your history
+browser-history search "react hooks" --days 30
+
+# Export a shareable HTML report
+browser-history export --format html -o report.html
 ```
 
 ---
 
-## Output Overview
+## Supported browsers
 
-**Stats dashboard** includes:
-- Summary card (visits · unique domains · total time · **productivity score**)
-- Top sites table with category labels
-- Category breakdown bar chart
-- Hourly activity heatmap
-- Day-of-week distribution
-- **24-week GitHub-style activity calendar**
-- 14-day daily trend
+| Browser | macOS | Windows | Linux |
+|---------|:-----:|:-------:|:-----:|
+| Arc | ✅ | ✅ | — |
+| Chrome | ✅ | ✅ | ✅ |
+| Brave | ✅ | ✅ | ✅ |
+| Edge | ✅ | ✅ | ✅ |
+| Vivaldi | ✅ | ✅ | ✅ |
+| Opera | ✅ | ✅ | ✅ |
+| Firefox | ✅ | ✅ | ✅ |
+| Safari | ✅* | — | — |
 
-**HTML export** generates a self-contained file with interactive Chart.js charts:
-- Top 20 sites by visits and time
-- Hourly pattern
-- Category pie chart
+\*Safari requires Full Disk Access for your terminal app.
+**System Settings → Privacy & Security → Full Disk Access**
 
 ---
 
-## Categories
+## Example outputs
 
-Domains are automatically classified into:
+### `stats` — Full dashboard
 
-`AI Tools` · `Development` · `Work` · `Education` · `Social Media` · `Video` · `Entertainment` · `Gaming` · `News` · `Finance` · `Shopping` · `Maps` · `Search` · `Reference` · `Other`
+```
+╭──────────── Arc  (last 7d) ────────────╮
+│  Visits:           4,231               │
+│  Unique domains:   312                 │
+│  Total time:       6.2h                │
+│  Productivity:     68/100              │
+│  Period:           2024-03-08 → 03-14  │
+╰────────────────────────────────────────╯
+
+╭─────────────── Top 20 Sites ───────────────╮
+│  #   Domain               Cat      Visits  │
+│  1   github.com           Dev       1,842  │
+│  2   chatgpt.com          AI          934  │
+│  3   stackoverflow.com    Dev         721  │
+│  4   youtube.com          Video       543  │
+│  5   notion.so            Work        412  │
+│  …                                         │
+╰────────────────────────────────────────────╯
+
+Hourly pattern
+0h                     12h                    23h
+░░░░░░▒▒▓▓█████████▓▓▓▒▒▒░░░░
+  Peak: 10:00(312), 11:00(298), 14:00(267)
+
+Activity calendar (last 24 weeks)
+     Jan         Feb         Mar
+Mo  ░░░░▒▒▒▒▓▓▓▓▓▓▓▓█████████
+Tu  ░░▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓███████
+We  ░░░░▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓█████
+…
+```
+
+### `compare` — Period comparison
+
+```
+╭───────── Last week vs This week ─────────╮
+│  Metric          Last week   This week   │
+│  Total visits    3,841       4,231  +10% │
+│  Unique domains  287         312     +9% │
+│  Total time      5.1h        6.2h   +22% │
+│  Productivity    54/100      68/100 +26% │
+│  Top site        youtube.com github.com  │
+╰──────────────────────────────────────────╯
+
+New this week:  perplexity.ai  rust-lang.org  docs.rs
+No longer visited:  twitch.tv  reddit.com
+
+Biggest increases:
+  github.com                       312 →  891  +186%
+  stackoverflow.com                145 →  312  +115%
+
+Biggest decreases:
+  youtube.com                      543 →  201   -63%
+```
+
+### `timeline` — Day view
+
+```
+Activity Timeline — 2024-03-14 (Thu)  312 visits
+
+  09:00   47  ████████████████████  github.com×18  chatgpt.com×12  notion.so
+  10:00   52  ████████████████████  github.com×21  stackoverflow.com×15
+  11:00   38  ████████████████      chatgpt.com×14  docs.python.org×9
+  12:00   12  █████                 naver.com×6  youtube.com×4
+  13:00    8  ███                   youtube.com×5
+  14:00   41  █████████████████     github.com×19  vercel.com×11
+  21:00   22  █████████             reddit.com×8  youtube.com×7
+```
+
+---
+
+## How it works
+
+- Reads SQLite databases that browsers already maintain locally
+- Copies each DB to a temp file before reading (no writes, no locks)
+- Filters out internal browser URLs (`chrome://`, `about:`, etc.)
+- Categorizes domains using a built-in map of 110+ domains + keyword fallback
+- Calculates productivity scores based on category time distribution
+- **Never uploads any data** — everything runs locally
 
 ---
 
 ## Privacy
 
-- All processing happens locally on your machine.
-- The tool copies the browser DB to a secure temporary file (`tempfile.mkstemp`) and deletes it immediately after reading.
-- No data is sent to any server.
+This tool reads sensitive personal data. It is designed with privacy in mind:
+
+- All processing happens locally on your machine
+- No data is sent to any server
+- Exported files are created only when explicitly requested
+- The source code is a single readable Python file — inspect it yourself
+
+---
+
+## Contributing
+
+The entire tool is a single file (`browser_history.py`) with one runtime dependency (`rich`).
+
+**Adding a browser:** Edit `_browser_catalog()` with the platform-specific DB path and `db_type`.
+
+**Adding a domain category:** Add entries to `CATEGORY_MAP` at the top of the file.
+
+**Adding a command:** Follow the existing pattern — a `cmd_*` function and a subparser registration in `main()`.
 
 ---
 
