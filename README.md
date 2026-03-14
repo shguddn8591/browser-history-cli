@@ -14,6 +14,9 @@ browser-history insights
 
 No accounts. No cloud. Your data never leaves your machine.
 
+![insights screenshot](docs/screenshot-insights.png)
+![compare screenshot](docs/screenshot-compare.png)
+
 ---
 
 ## What it does
