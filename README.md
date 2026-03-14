@@ -1,5 +1,10 @@
 # browser-history-cli
 
+[![PyPI version](https://img.shields.io/pypi/v/browser-history-cli)](https://pypi.org/project/browser-history-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/browser-history-cli)](https://pypi.org/project/browser-history-cli/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)]()
+
 **Turn your browser history into actionable insights — right in your terminal.**
 
 ```
