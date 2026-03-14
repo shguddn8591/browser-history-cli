@@ -38,8 +38,8 @@ dependencies = [
 browser-history = "browser_history:main"
 
 [project.urls]
-Homepage = "https://github.com/shguddn8591/----cli"
-Issues = "https://github.com/shguddn8591/----cli/issues"
+Homepage = "https://github.com/shguddn8591/browser-history-cli"
+Issues = "https://github.com/shguddn8591/browser-history-cli/issues"
 
 [tool.setuptools]
 py-modules = ["browser_history"]
